@@ -4,7 +4,7 @@ import {
   RefreshCw, FileText, ArrowDownLeft, ArrowUpRight, Calculator, AlertTriangle
 } from 'lucide-react';
 import { api } from '../lib/api';
-import { money, moneySigned, fmtDate, PAYMENT_METHODS } from '../lib/format';
+import { money, moneySigned, fmtDate } from '../lib/format';
 import { downloadLedgerStatement } from '../lib/pdf';
 import { exportXlsx } from '../lib/export';
 import { useApp } from './ui';
@@ -13,7 +13,9 @@ import InvoiceModal from './InvoiceModal';
 export default function EditableLedgerModal({ kind = 'vendor', partyId, onClose, onChanged }) {
   const { settings, toast, confirm, lookups } = useApp();
   const banks = lookups.bank_accounts ?? [];
-  const isBankMethod = (m) => PAYMENT_METHODS.find((x) => x.value === m)?.account === 'bank';
+  // One dropdown: 'cash' or a bank account id. Every bank account counts as method 'bank'.
+  const payFields = (account) =>
+    account === 'cash' ? { method: 'cash', bank_account_id: null } : { method: 'bank', bank_account_id: Number(account) };
   const bankName = (id) => banks.find((b) => b.id === id)?.name;
   const [ledgerData, setLedgerData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -34,8 +36,7 @@ export default function EditableLedgerModal({ kind = 'vendor', partyId, onClose,
     date: new Date().toISOString().slice(0, 10),
     type: kind === 'customer' ? 'payment' : 'payment',
     amount: '',
-    method: 'cash',
-    bank_account_id: '',
+    account: 'cash',
   });
   const [addingRow, setAddingRow] = useState(false);
 
@@ -92,8 +93,7 @@ export default function EditableLedgerModal({ kind = 'vendor', partyId, onClose,
       date: entry.date,
       description: entry.description,
       amount: entry.payment || entry.charge || 0,
-      method: entry.method || 'cash',
-      bank_account_id: entry.bank_account_id ?? banks[0]?.id ?? '',
+      account: !entry.method || entry.method === 'cash' ? 'cash' : String(entry.bank_account_id ?? banks[0]?.id ?? 'cash'),
     });
   };
 
@@ -109,8 +109,7 @@ export default function EditableLedgerModal({ kind = 'vendor', partyId, onClose,
         await api.put(`/payments/${entry.doc_id}`, {
           date: editFields.date,
           amount: amt,
-          method: editFields.method || 'cash',
-          bank_account_id: isBankMethod(editFields.method) ? Number(editFields.bank_account_id) || null : null,
+          ...payFields(editFields.account),
         });
         toast('Payment updated & ledger balance refreshed');
       } else if (entry.type === 'sale') {
@@ -179,16 +178,14 @@ export default function EditableLedgerModal({ kind = 'vendor', partyId, onClose,
         party_id: partyId,
         date: newRow.date || new Date().toISOString().slice(0, 10),
         amount: amt,
-        method: newRow.method || 'cash',
-        bank_account_id: isBankMethod(newRow.method) ? Number(newRow.bank_account_id) || banks[0]?.id : null,
+        ...payFields(newRow.account),
       });
 
       toast(`Added row: ${money(amt)} recorded in ledger!`);
       setNewRow({
         date: new Date().toISOString().slice(0, 10),
         amount: '',
-        method: 'cash',
-        bank_account_id: '',
+        account: 'cash',
       });
       loadLedger();
       onChanged?.();
@@ -459,16 +456,10 @@ export default function EditableLedgerModal({ kind = 'vendor', partyId, onClose,
                             </td>
                             <td>
                               {e.type === 'payment' ? (
-                              <div className="row" style={{ gap: 4, flexWrap: 'wrap' }}>
-                                <select value={editFields.method} onChange={(ev) => setEditFields({ ...editFields, method: ev.target.value })} style={{ padding: '4px 6px', fontSize: '12.5px', width: 'auto' }}>
-                                  {PAYMENT_METHODS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
-                                </select>
-                                {isBankMethod(editFields.method) && (
-                                  <select value={editFields.bank_account_id || banks[0]?.id || ''} onChange={(ev) => setEditFields({ ...editFields, bank_account_id: ev.target.value })} style={{ padding: '4px 6px', fontSize: '12.5px', width: 'auto' }}>
-                                    {banks.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-                                  </select>
-                                )}
-                              </div>
+                              <select value={editFields.account} onChange={(ev) => setEditFields({ ...editFields, account: ev.target.value })} style={{ padding: '4px 6px', fontSize: '12.5px', width: 'auto' }}>
+                                <option value="cash">Cash</option>
+                                {banks.map((b) => <option key={b.id} value={b.id}>Bank — {b.name}</option>)}
+                              </select>
                               ) : (
                               <input 
                                 type="text" 
@@ -591,16 +582,10 @@ export default function EditableLedgerModal({ kind = 'vendor', partyId, onClose,
                         <span className="badge indigo">+ NEW ENTRY</span>
                       </td>
                       <td>
-                        <div className="row" style={{ gap: 4, flexWrap: 'wrap' }}>
-                                <select value={newRow.method} onChange={(ev) => setNewRow({ ...newRow, method: ev.target.value })} style={{ padding: '4px 6px', fontSize: '12.5px', width: 'auto' }}>
-                                  {PAYMENT_METHODS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
-                                </select>
-                                {isBankMethod(newRow.method) && (
-                                  <select value={newRow.bank_account_id || banks[0]?.id || ''} onChange={(ev) => setNewRow({ ...newRow, bank_account_id: ev.target.value })} style={{ padding: '4px 6px', fontSize: '12.5px', width: 'auto' }}>
-                                    {banks.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-                                  </select>
-                                )}
-                              </div>
+                        <select value={newRow.account} onChange={(ev) => setNewRow({ ...newRow, account: ev.target.value })} style={{ padding: '4px 6px', fontSize: '12.5px', width: 'auto' }}>
+                                <option value="cash">Cash</option>
+                                {banks.map((b) => <option key={b.id} value={b.id}>Bank — {b.name}</option>)}
+                              </select>
                       </td>
                       <td className="r muted">—</td>
                       <td className="r">
