@@ -10,7 +10,7 @@ import {
 } from './db.js';
 import {
   requireAuth, isPasswordSet, verifyPassword, makeToken, setPassword,
-  currentPasswordHash, loginThrottle, noteFailedLogin, clearFailedLogins, MIN_PASSWORD_LENGTH,
+  currentPasswordHash, loginThrottle, noteFailedLogin, clearFailedLogins, MIN_PASSWORD_LENGTH, checkLogin,
 } from './auth.js';
 import { h, bad, today } from './utils.js';
 import { buildArchive, importArchive } from './archive.js';
@@ -23,6 +23,13 @@ import dayDiary from './routes/dayDiary.js';
 import cashbook from './routes/cashbook.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Fresh hosted/serverless deployments can start with an empty database file. The
+// local desktop entry point migrates before binding the port, but the Netlify
+// function imports this file directly, so create the schema here as the first
+// app-level initialization step.
+await migrate();
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
@@ -38,25 +45,13 @@ app.get(
 );
 
 app.post(
-  '/api/auth/setup',
-  h(async (req) => {
-    if (await isPasswordSet()) throw bad('Password already configured');
-    const pw = String(req.body.password || '');
-    if (pw.length < MIN_PASSWORD_LENGTH) throw bad(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`);
-    await setPassword(pw);
-    return { token: await makeToken() };
-  })
-);
-
-app.post(
   '/api/auth/login',
   loginThrottle,
   h(async (req, res) => {
-    if (!(await isPasswordSet())) return { token: await makeToken() };
-    if (!verifyPassword(String(req.body.password || ''), await currentPasswordHash())) {
+    if (!(await checkLogin(req.body.username, req.body.password))) {
       noteFailedLogin(req);
       res.status(401);
-      return { error: 'Incorrect password' };
+      return { error: 'Incorrect username or password' };
     }
     clearFailedLogins(req);
     return { token: await makeToken() };

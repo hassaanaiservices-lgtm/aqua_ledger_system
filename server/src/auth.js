@@ -4,6 +4,9 @@
 import crypto from 'node:crypto';
 import { getSetting, setSetting, IS_REMOTE } from './db.js';
 
+const DEFAULT_OWNER_USERNAME = 'Aquaome';
+const DEFAULT_OWNER_PASSWORD = 'aquahome@1';
+
 export const MIN_PASSWORD_LENGTH = IS_REMOTE ? 10 : 4;
 
 // One round trip per cold start instead of one per request.
@@ -62,6 +65,32 @@ export async function checkToken(token) {
 }
 
 export const isPasswordSet = async () => Boolean(await passwordHash());
+
+/**
+ * Creates the owner account the first time the database is prepared. Values
+ * from OWNER_USERNAME / OWNER_PASSWORD win; the built-in defaults only apply
+ * when those are not set. Existing accounts are never overwritten here: change
+ * the password from Settings instead.
+ */
+export async function ensureOwner() {
+  if (!(await getSetting('owner_username'))) {
+    await setSetting('owner_username', process.env.OWNER_USERNAME || DEFAULT_OWNER_USERNAME);
+  }
+  if (!(await passwordHash())) {
+    await setPassword(process.env.OWNER_PASSWORD || DEFAULT_OWNER_PASSWORD);
+  }
+  await secret();
+}
+
+export async function checkLogin(username, password) {
+  const expected = String(await getSetting('owner_username', ''));
+  const given = String(username || '');
+  const nameOk = expected.length > 0 && given.length === expected.length &&
+    crypto.timingSafeEqual(Buffer.from(given), Buffer.from(expected));
+  // Always run the password check so the response time does not reveal which part was wrong.
+  const passOk = verifyPassword(String(password || ''), await passwordHash());
+  return nameOk && passOk;
+}
 
 export async function requireAuth(req, res, next) {
   try {

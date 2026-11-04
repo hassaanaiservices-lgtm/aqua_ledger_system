@@ -166,14 +166,7 @@ export default function App() {
     try {
       const status = await api.get('/auth/status');
       setAuthStatus(status);
-      if (!status.password_set) {
-        // First run or no password set
-        setAuthenticated(true);
-      } else if (getToken()) {
-        setAuthenticated(true);
-      } else {
-        setAuthenticated(false);
-      }
+      setAuthenticated(Boolean(getToken()));
     } catch {
       setAuthenticated(false);
     } finally {
