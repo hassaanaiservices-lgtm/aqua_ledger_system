@@ -1,0 +1,19 @@
+{
+  "name": "aqua-bms-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "node --watch --no-warnings=ExperimentalWarning src/index.js",
+    "start": "node --no-warnings=ExperimentalWarning src/index.js",
+    "migrate": "node src/cli-migrate.js",
+    "push": "node src/cli-push.js"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.18.0",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "serverless-http": "^4.0.0"
+  }
+}

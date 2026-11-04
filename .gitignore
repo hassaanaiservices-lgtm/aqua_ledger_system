@@ -1,0 +1,23 @@
+node_modules/
+
+# The live books. Never push these to a public repository.
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Turso credentials
+.env
+.env.*
+!.env.example
+
+# Build output
+client/dist/
+release/
+.netlify/
+
+# graphify tooling
+.venv-graphify/
+
+# generated graph (rebuilt locally)
+graphify-out/

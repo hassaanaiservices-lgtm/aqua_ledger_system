@@ -1,0 +1,30 @@
+# What graphify must never read. Anything listed here is not parsed, summarised
+# or sent to an LLM. The business data comes first: it is real customer, vendor
+# and bank information.
+data/
+*.db
+*.db-wal
+*.db-shm
+*.json.bak
+aqua-archive-*.json
+aqua-master-*.json
+.env
+.env.*
+
+# The tool's own environment and its output
+.venv-graphify/
+graphify-out/
+
+# Generated or third-party code that only adds noise
+node_modules/
+client/dist/
+release/
+.netlify/
+package-lock.json
+client/package-lock.json
+server/package-lock.json
+.gsd/
+electron/assets/
+
+# graphify's own skill files and registration
+.claude/

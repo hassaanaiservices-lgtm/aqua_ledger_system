@@ -1,0 +1,64 @@
+{
+  "name": "aquahomeappliance",
+  "version": "1.0.0",
+  "description": "Aqua Home Appliance Business Management System",
+  "main": "electron/main.cjs",
+  "author": "Aqua Home Appliance",
+  "scripts": {
+    "dev:server": "cd server && npm run dev",
+    "dev:client": "cd client && npm run dev",
+    "dev": "node run-dev.js",
+    "build:client": "cd client && npm run build",
+    "build": "npm run build:client",
+    "start": "cd server && npm start",
+    "electron:dev": "electron .",
+    "dist:installer": "npm run build:client && npx electron-builder --win --x64 --dir && /home/hassaan/.cache/electron-builder/nsis-3.0.4.1/nsis-3.0.4.1-1mx3n/linux/makensis electron/installer.nsi",
+    "dist:win": "npm run dist:installer",
+    "migrate": "cd server && npm run migrate",
+    "push": "cd server && npm run push"
+  },
+  "build": {
+    "appId": "com.aquahome.appliance",
+    "productName": "Aqua Home Appliance",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "server/**/*",
+      "client/dist/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "data/business.db",
+        "to": "data/business.db"
+      }
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ],
+      "icon": "electron/assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Aqua Home Appliance",
+      "installerIcon": "electron/assets/icon.ico",
+      "uninstallerIcon": "electron/assets/icon.ico"
+    }
+  },
+  "devDependencies": {
+    "electron": "^35.7.5",
+    "electron-builder": "^26.15.3"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^4.21.2",
+    "@libsql/client": "^0.18.0",
+    "serverless-http": "^4.0.0"
+  }
+}

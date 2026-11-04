@@ -1,0 +1,28 @@
+[build]
+  # Netlify only installs the root package.json, so the client's own
+  # dependencies (Vite and React) have to be installed explicitly.
+  command = "npm install --prefix client && npm run build:client"
+  publish = "client/dist"
+  functions = "netlify/functions"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+[functions]
+  node_bundler = "esbuild"
+  # Installed into the function rather than bundled: the libSQL packages ship
+  # platform-specific binaries that esbuild cannot inline.
+  external_node_modules = ["@libsql/client", "libsql"]
+
+# The React app calls /api/... ; send that to the Express function and let
+# everything else fall through to the single-page app.
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/api/api/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
