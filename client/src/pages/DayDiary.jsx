@@ -7,7 +7,7 @@ import {
 import { PageHeader, StatCard, Modal, Field, Empty, Loading, Seg, useFetch, useSaver, useApp } from '../components/ui';
 import { MoneyFlowCard, MoneyPositionCard, ExpenseGroupsCard } from '../components/BusinessCharts';
 import { api } from '../lib/api';
-import { money, fmtDateLong, today, addDays } from '../lib/format';
+import { money, fmtDateLong, today, addDays, paymentOptions, parsePaymentChoice } from '../lib/format';
 
 const TABS = [
   { id: 'daybook', label: 'Day Book (Roznamcha)', icon: BookOpen },
@@ -184,19 +184,18 @@ function BankPicker({ label, value, onChange, accounts, hint }) {
   );
 }
 
-function ExpenseModal({ date, categories, methods, banks, onClose }) {
+function ExpenseModal({ date, categories, banks, onClose }) {
   const [save, busy] = useSaver();
   const [form, setForm] = useState({
-    date, category: '', amount: '', method: 'cash', bank_account_id: banks[0]?.id ?? '', note: '',
+    date, category: '', amount: '', payment: 'cash', note: '',
   });
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
 
   const groups = [...new Set(categories.map((c) => c.group_name))];
-  const isBank = (methods.find((m) => m.value === form.method)?.account ?? 'cash') === 'bank';
 
   const submit = async (e) => {
     e.preventDefault();
-    const ok = await save(() => api.post('/expenses', form), 'Expense recorded');
+    const ok = await save(() => api.post('/expenses', { ...form, ...parsePaymentChoice(form.payment, banks) }), 'Expense recorded');
     if (ok) onClose();
   };
 
@@ -227,19 +226,10 @@ function ExpenseModal({ date, categories, methods, banks, onClose }) {
             <input type="date" value={form.date} onChange={set('date')} required />
           </Field>
           <Field label="Paid From *" hint="cash drawer or bank">
-            <select value={form.method} onChange={set('method')}>
-              {methods.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+            <select value={form.payment} onChange={set('payment')}>
+              {paymentOptions(banks).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
           </Field>
-          {isBank && (
-            <BankPicker
-              label="Which Bank Account *"
-              hint="whose account it left"
-              value={form.bank_account_id}
-              onChange={(v) => setForm({ ...form, bank_account_id: v })}
-              accounts={banks}
-            />
-          )}
           <Field label="Note" className="full">
             <input value={form.note} onChange={set('note')} placeholder="Optional detail, e.g. October electricity bill" />
           </Field>
@@ -454,7 +444,6 @@ export default function DayDiary() {
 
   const { data: d, loading } = useFetch('/day-diary', { date });
   const { data: categories } = useFetch('/expense-categories');
-  const { data: methods } = useFetch('/payment-methods');
   const { data: kinds } = useFetch('/cash-book/kinds');
   const { data: bankData } = useFetch('/bank-accounts');
   const allBanks = bankData?.accounts ?? [];
@@ -526,8 +515,8 @@ export default function DayDiary() {
         {tab === 'notes' && <NotesTab d={d} date={date} />}
       </div>
 
-      {modal === 'expense' && categories && methods && bankData && (
-        <ExpenseModal date={date} categories={categories} methods={methods} banks={openBanks} onClose={() => setModal(null)} />
+      {modal === 'expense' && categories && bankData && (
+        <ExpenseModal date={date} categories={categories} banks={openBanks} onClose={() => setModal(null)} />
       )}
       {modal === 'cashbook' && kinds && bankData && (
         <CashBookModal date={date} kinds={kinds} banks={openBanks} onClose={() => setModal(null)} />

@@ -121,3 +121,20 @@ export const PAYMENT_METHODS = [
   { value: 'online', label: 'Online / EasyPaisa / JazzCash', account: 'bank' },
   { value: 'card', label: 'Debit / Credit Card', account: 'bank' },
 ];
+
+const bankLabel = (b) => (b.owner_name ? `${b.name} (${b.owner_name})` : b.name);
+
+/** One dropdown for how money moved: "Bank Transfer" becomes one option per bank account. */
+export const paymentOptions = (banks = []) =>
+  PAYMENT_METHODS.flatMap((m) =>
+    m.value === 'bank' ? banks.map((b) => ({ value: `bank:${b.id}`, label: bankLabel(b) })) : [m]
+  );
+
+export const paymentChoice = (method, bankId) => (method === 'bank' && bankId ? `bank:${bankId}` : method || 'cash');
+
+/** Cheque, online and card still settle in a bank book; they keep their account or use the first one. */
+export function parsePaymentChoice(choice, banks = [], keepBankId = null) {
+  if (choice.startsWith('bank:')) return { method: 'bank', bank_account_id: Number(choice.slice(5)) };
+  const bankBook = PAYMENT_METHODS.find((m) => m.value === choice)?.account === 'bank';
+  return { method: choice, bank_account_id: bankBook ? keepBankId ?? banks[0]?.id ?? null : null };
+}

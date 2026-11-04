@@ -4,7 +4,7 @@ import {
   ArrowDownLeft, Phone, MapPin, Printer, History, Pencil, Trash2
 } from 'lucide-react';
 import { useApp, useFetch, PageHeader, Modal, Field, Loading, Empty, useSaver } from '../components/ui';
-import { money, moneySigned, fmtDate, PAYMENT_METHODS } from '../lib/format';
+import { money, moneySigned, fmtDate, paymentOptions, parsePaymentChoice } from '../lib/format';
 import { downloadLedgerStatement } from '../lib/pdf';
 import { api } from '../lib/api';
 import InvoiceModal from '../components/InvoiceModal';
@@ -48,7 +48,8 @@ export default function Customers({ onNavigate }) {
   const handleRecordPayment = async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
-    const body = Object.fromEntries(fd.entries());
+    const { payment, ...body } = Object.fromEntries(fd.entries());
+    Object.assign(body, parsePaymentChoice(payment, lookups.bank_accounts));
     body.party_type = 'customer';
     body.party_id = paymentModal.id;
 
@@ -251,16 +252,9 @@ export default function Customers({ onNavigate }) {
                 <input type="date" name="date" defaultValue={new Date().toISOString().slice(0, 10)} required />
               </Field>
               <Field label="Payment Method *">
-                <select name="method" defaultValue="cash">
-                  {PAYMENT_METHODS.map((m) => (
-                    <option key={m.value} value={m.value}>{m.label}</option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Bank Account" hint="used only when not cash">
-                <select name="bank_account_id" defaultValue={lookups.bank_accounts?.[0]?.id ?? ''}>
-                  {(lookups.bank_accounts ?? []).map((a) => (
-                    <option key={a.id} value={a.id}>{a.owner_name ? `${a.name} (${a.owner_name})` : a.name}</option>
+                <select name="payment" defaultValue="cash">
+                  {paymentOptions(lookups.bank_accounts).map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
                   ))}
                 </select>
               </Field>

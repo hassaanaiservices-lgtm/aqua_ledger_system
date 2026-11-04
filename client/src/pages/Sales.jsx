@@ -4,7 +4,7 @@ import {
   UserPlus, Calendar, CreditCard, DollarSign, FileText, CheckCircle2 
 } from 'lucide-react';
 import { useApp, useFetch, PageHeader, Modal, Field, Loading, Empty, useSaver } from '../components/ui';
-import { money, fmtDate, PAYMENT_METHODS } from '../lib/format';
+import { money, fmtDate, paymentOptions, parsePaymentChoice } from '../lib/format';
 import { api } from '../lib/api';
 import InvoiceModal from '../components/InvoiceModal';
 
@@ -27,7 +27,6 @@ export default function Sales({ onNavigate }) {
   const [paidAmount, setPaidAmount] = useState(0);
   const [paymentMethod, setPaymentMethod] = useState('cash');
   const [paymentRef, setPaymentRef] = useState('');
-  const [paymentBankId, setPaymentBankId] = useState('');
   const [note, setNote] = useState('');
 
   const { data: sales, loading, reload } = useFetch('/sales', { 
@@ -104,8 +103,8 @@ export default function Sales({ onNavigate }) {
         discount: Number(discount) || 0,
         tax: Number(tax) || 0,
         paid_amount: Number(paidAmount) || 0,
-        payment_method: paymentMethod,
-        payment_bank_account_id: paymentBankId || lookups.bank_accounts?.[0]?.id,
+        payment_method: parsePaymentChoice(paymentMethod, lookups.bank_accounts).method,
+        payment_bank_account_id: parsePaymentChoice(paymentMethod, lookups.bank_accounts).bank_account_id,
         payment_reference: paymentRef,
         note,
       });
@@ -392,15 +391,8 @@ export default function Sales({ onNavigate }) {
                   </Field>
                   <Field label="Payment Method">
                     <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}>
-                      {PAYMENT_METHODS.map((m) => (
-                        <option key={m.value} value={m.value}>{m.label}</option>
-                      ))}
-                    </select>
-                  </Field>
-                  <Field label="Bank Account" hint="used only when not cash">
-                    <select value={paymentBankId} onChange={(e) => setPaymentBankId(e.target.value)}>
-                      {(lookups.bank_accounts ?? []).map((a) => (
-                        <option key={a.id} value={a.id}>{a.owner_name ? `${a.name} (${a.owner_name})` : a.name}</option>
+                      {paymentOptions(lookups.bank_accounts).map((o) => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
                       ))}
                     </select>
                   </Field>
