@@ -78,6 +78,8 @@ export async function buildLedger(kind, id, from, to) {
       type: 'payment',
       doc_id: p.id,
       ref: docNo.payment(p.id),
+      method: p.method,
+      bank_account_id: p.bank_account_id,
       linked_ref: p.sale_id ? docNo.sale(p.sale_id) : p.purchase_id ? docNo.purchase(p.purchase_id) : null,
       description:
         `${kind === 'customer' ? 'Payment received' : 'Payment made'} (${p.method})` +

@@ -3,7 +3,7 @@
 // The .db download is an exact SQLite file but only the desktop build can read
 // one back. The JSON archive here works everywhere, including a hosted Turso
 // database, so it is the format that actually moves a business online.
-import { all, run, tx, getSetting, migrate } from './db.js';
+import { db, all, getSetting, migrate } from './db.js';
 
 export const ARCHIVE_FORMAT = 'aqua-archive-v1';
 
@@ -82,30 +82,38 @@ export async function importArchive(archive) {
   // Older exports carry derived figures (stock, balances) that are not columns
   // at all; keep only what the table can actually hold.
   const columns = {};
-  for (const table of known) columns[table] = new Set((await all(`PRAGMA table_info(${table})`)).map((c) => c.name));
+  await Promise.all(
+    known.map(async (t) => {
+      columns[t] = new Set((await all(`PRAGMA table_info(${t})`)).map((c) => c.name));
+    })
+  );
 
+  // One batch is one round trip and one transaction: row-by-row inserts to a
+  // hosted database take longer than a serverless function is allowed to run.
+  const statements = [];
   const imported = {};
-  await tx(async () => {
-    for (const table of [...ARCHIVE_TABLES].reverse()) {
-      if (table === 'settings') await run(`DELETE FROM settings WHERE key NOT IN ('password_hash','auth_secret')`);
-      else await run(`DELETE FROM ${table}`);
+  for (const table of [...ARCHIVE_TABLES].reverse()) {
+    statements.push(
+      table === 'settings'
+        ? `DELETE FROM settings WHERE key NOT IN ('password_hash','auth_secret')`
+        : `DELETE FROM ${table}`
+    );
+  }
+  for (const table of known) {
+    let n = 0;
+    for (const row of archive.tables[table]) {
+      if (table === 'settings' && SECRET_SETTINGS.has(row.key)) continue;
+      const cols = Object.keys(row).filter((c) => columns[table].has(c));
+      if (!cols.length) continue;
+      statements.push({
+        sql: `INSERT OR REPLACE INTO ${table} (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`,
+        args: cols.map((c) => (row[c] === undefined ? null : row[c])),
+      });
+      n += 1;
     }
-    for (const table of known) {
-      const rows = archive.tables[table];
-      let n = 0;
-      for (const row of rows) {
-        if (table === 'settings' && SECRET_SETTINGS.has(row.key)) continue;
-        const cols = Object.keys(row).filter((c) => columns[table].has(c));
-        if (!cols.length) continue;
-        await run(
-          `INSERT OR REPLACE INTO ${table} (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`,
-          ...cols.map((c) => (row[c] === undefined ? null : row[c]))
-        );
-        n += 1;
-      }
-      imported[table] = n;
-    }
-  });
+    imported[table] = n;
+  }
+  await db.batch(statements, 'write');
   // Files from before bank accounts and expense categories existed lack them.
   await migrate();
   return imported;
