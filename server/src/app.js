@@ -22,13 +22,9 @@ import analytics from './routes/analytics.js';
 import dayDiary from './routes/dayDiary.js';
 import cashbook from './routes/cashbook.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-// Fresh hosted/serverless deployments can start with an empty database file. The
-// local desktop entry point migrates before binding the port, but the Netlify
-// function imports this file directly, so create the schema here as the first
-// app-level initialization step.
-await migrate();
+// import.meta.url is empty once bundled to CommonJS for Netlify; the path is only
+// used for local defaults, so a working-directory fallback is harmless there.
+const __dirname = import.meta.url ? path.dirname(fileURLToPath(import.meta.url)) : process.cwd();
 
 const app = express();
 app.use(cors());

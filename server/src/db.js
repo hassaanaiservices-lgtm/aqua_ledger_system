@@ -2,13 +2,16 @@
 // Design principle: balances and stock are NEVER stored as editable numbers.
 // They are always derived from the transaction tables, so every figure can be
 // traced back to its source document (sale, purchase, payment, assembly, adjustment).
+import { createClient } from '@libsql/client';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { HttpError } from './utils.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// import.meta.url is empty once bundled to CommonJS for Netlify; the path is only
+// used for local defaults, so a working-directory fallback is harmless there.
+const __dirname = import.meta.url ? path.dirname(fileURLToPath(import.meta.url)) : process.cwd();
 export const DATA_DIR = process.env.DATA_DIR || path.resolve(__dirname, '../../data');
 export const DB_PATH = path.join(DATA_DIR, 'business.db');
 
@@ -21,11 +24,6 @@ export const DB_PATH = path.join(DATA_DIR, 'business.db');
 export const IS_REMOTE = Boolean(process.env.DATABASE_URL && !process.env.DATABASE_URL.startsWith('file:'));
 if (!process.env.DATABASE_URL) fs.mkdirSync(DATA_DIR, { recursive: true });
 
-// The default export drags in libSQL's native binary, which has no place in a
-// serverless bundle. Talking to Turso only needs the pure-JS fetch client.
-const { createClient } = IS_REMOTE
-  ? await import('@libsql/client/web')
-  : await import('@libsql/client');
 
 export let db = createClient({
   url: process.env.DATABASE_URL || `file:${DB_PATH}`,
