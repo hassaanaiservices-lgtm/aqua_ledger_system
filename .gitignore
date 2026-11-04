@@ -21,3 +21,7 @@ release/
 
 # generated graph (rebuilt locally)
 graphify-out/
+
+# local tooling, not part of the app
+.claude/
+.gsd/
