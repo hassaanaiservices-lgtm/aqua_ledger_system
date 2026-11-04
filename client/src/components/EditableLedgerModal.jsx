@@ -13,7 +13,6 @@ import InvoiceModal from './InvoiceModal';
 export default function EditableLedgerModal({ kind = 'vendor', partyId, onClose, onChanged }) {
   const { settings, toast, confirm, lookups } = useApp();
   const banks = lookups.bank_accounts ?? [];
-  const bankName = (id) => banks.find((b) => b.id === id)?.name;
   const [ledgerData, setLedgerData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [dateFilter, setDateFilter] = useState({ from: '', to: '' });
@@ -510,12 +509,10 @@ export default function EditableLedgerModal({ kind = 'vendor', partyId, onClose,
                             <span 
                               className="editable-cell" 
                               onClick={() => startEditRow(e)} 
-                              title="Click to edit row"
+                              title={e.note ? `Note: ${e.note}` : 'Click to edit row'}
                               style={{ cursor: 'pointer', borderBottom: '1px dotted rgba(255,255,255,0.2)' }}
                             >
-                              {e.type === 'payment' && e.method === 'bank' && bankName(e.bank_account_id)
-                                ? `${e.description} · ${bankName(e.bank_account_id)}`
-                                : e.description}
+                              {e.description}
                             </span>
                           </td>
                           <td className="r">{e.charge ? money(e.charge) : '—'}</td>

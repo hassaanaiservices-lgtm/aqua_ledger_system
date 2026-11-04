@@ -2,7 +2,7 @@
 // Customer balance = opening + sales - payments received  (positive => customer owes us)
 // Vendor balance   = opening + purchases - payments made  (positive => we owe vendor)
 import { Router } from 'express';
-import { all, get, run, tx, r2, CUSTOMER_BAL_SQL, VENDOR_BAL_SQL, customerBalance, vendorBalance, docNo, normalizeMethod, requireBankAccountId } from '../db.js';
+import { all, get, run, tx, r2, CUSTOMER_BAL_SQL, VENDOR_BAL_SQL, customerBalance, vendorBalance, docNo, normalizeMethod, requireBankAccountId, PAYMENT_METHODS } from '../db.js';
 import { h, bad, notFound, num, str, today } from '../utils.js';
 
 const r = Router();
@@ -49,7 +49,19 @@ export async function buildLedger(kind, id, from, to) {
      FROM ${c.docTable} d WHERE ${c.docFk} = ?`,
     id
   );
-  const pays = await all(`SELECT * FROM payments WHERE party_type = ? AND party_id = ?`, kind, id);
+  const pays = await all(
+    `SELECT p.*, b.name AS bank_name, b.owner_name AS bank_owner FROM payments p
+     LEFT JOIN bank_accounts b ON b.id = p.bank_account_id
+     WHERE p.party_type = ? AND p.party_id = ?`,
+    kind,
+    id
+  );
+  // The ledger names where the money went, nothing else: free-text notes go
+  // stale when the method is changed later, so they ride along separately.
+  const payLabel = (p) =>
+    p.method === 'bank' && p.bank_name
+      ? (p.bank_owner ? `${p.bank_name} (${p.bank_owner})` : p.bank_name)
+      : PAYMENT_METHODS.find((m) => m.value === p.method)?.label ?? p.method;
 
   const docKey = {};
   for (const d of docs) docKey[d.id] = `${d.date} ${d.created_at} a${String(d.id).padStart(8, '0')}`;
@@ -82,11 +94,11 @@ export async function buildLedger(kind, id, from, to) {
       bank_account_id: p.bank_account_id,
       linked_ref: p.sale_id ? docNo.sale(p.sale_id) : p.purchase_id ? docNo.purchase(p.purchase_id) : null,
       description:
-        `${kind === 'customer' ? 'Payment received' : 'Payment made'} (${p.method})` +
+        payLabel(p) +
         (p.reference ? ` · Ref ${p.reference}` : '') +
         (p.sale_id ? ` · against ${docNo.sale(p.sale_id)}` : '') +
-        (p.purchase_id ? ` · against ${docNo.purchase(p.purchase_id)}` : '') +
-        (p.note ? ` · ${p.note}` : ''),
+        (p.purchase_id ? ` · against ${docNo.purchase(p.purchase_id)}` : ''),
+      note: p.note,
       charge: 0,
       payment: r2(p.amount),
     })),
