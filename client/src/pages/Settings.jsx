@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { useApp, PageHeader, Field, useSaver } from '../components/ui';
 import { fileToDataUrl, imageKB, LOGO_LIMITS } from '../lib/image';
-import { api, downloadBackup, downloadReadableBackup, restoreBackup, restoreArchive } from '../lib/api';
+import { api, downloadBackup, downloadReadableBackup, restoreBackup, restoreArchive, restoreDbToHosted } from '../lib/api';
 
 export default function Settings({ onNavigate }) {
   const { settings, loadSettings, toast, confirm, changed } = useApp();
@@ -144,7 +144,9 @@ export default function Settings({ onNavigate }) {
 
     const ok = await confirm({
       title: 'Restore Database from File?',
-      message: `Are you sure you want to restore data from "${file.name}"? This will replace the current database with the uploaded file. A safety backup of your existing database will be saved automatically first.`,
+      message: storage?.hosted
+        ? `This replaces everything currently in the online copy with the contents of "${file.name}". Your password is not changed. This cannot be undone.`
+        : `Are you sure you want to restore data from "${file.name}"? This will replace the current database with the uploaded file. A safety backup of your existing database will be saved automatically first.`,
       okText: 'Restore Now',
       danger: true,
     });
@@ -155,7 +157,8 @@ export default function Settings({ onNavigate }) {
 
     try {
       setRestoring(true);
-      await restoreBackup(file);
+      if (storage?.hosted) await restoreDbToHosted(file);
+      else await restoreBackup(file);
       toast('Database successfully restored! Refreshing application...');
       loadSettings();
       loadStorageInfo();
@@ -422,7 +425,7 @@ export default function Settings({ onNavigate }) {
                       <Upload size={14} color="#111114" /> Upload & Restore Database (.db)
                     </div>
                     <p className="muted small" style={{ margin: '4px 0 0', lineHeight: 1.45 }}>
-                      Exact SQLite file restore, for this PC only \u2014 it does not work on the online version. A safety snapshot of existing data is saved automatically first.
+                      Restore a SQLite .db backup from the desktop app. Works on the online version too. On a PC a safety snapshot is saved first.
                     </p>
                   </div>
                   <div>

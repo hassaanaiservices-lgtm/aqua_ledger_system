@@ -1,4 +1,5 @@
 // Thin fetch wrapper with auth token handling.
+import { dbFileToArchive } from './dbToArchive';
 const TOKEN_KEY = 'bms_token';
 
 export const getToken = () => localStorage.getItem(TOKEN_KEY);
@@ -77,6 +78,11 @@ export async function restoreArchive(file) {
   }
   if (!archive?.tables) throw new Error('That JSON file is not an Aqua Home Appliance archive.');
   return api.post('/backup/import', { ...archive, confirm: true });
+}
+
+/** Loads a desktop .db backup into the hosted database, via the JSON import. */
+export async function restoreDbToHosted(file) {
+  return api.post('/backup/import', { ...(await dbFileToArchive(file)), confirm: true });
 }
 
 export async function restoreBackup(file) {

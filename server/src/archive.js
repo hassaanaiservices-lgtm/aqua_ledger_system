@@ -3,7 +3,7 @@
 // The .db download is an exact SQLite file but only the desktop build can read
 // one back. The JSON archive here works everywhere, including a hosted Turso
 // database, so it is the format that actually moves a business online.
-import { all, run, tx, getSetting } from './db.js';
+import { all, run, tx, getSetting, migrate } from './db.js';
 
 export const ARCHIVE_FORMAT = 'aqua-archive-v1';
 
@@ -79,6 +79,11 @@ export async function importArchive(archive) {
   const known = ARCHIVE_TABLES.filter((t) => Array.isArray(archive.tables[t]));
   if (!known.length) throw new ArchiveError('The archive contains no recognisable records.');
 
+  // Older exports carry derived figures (stock, balances) that are not columns
+  // at all; keep only what the table can actually hold.
+  const columns = {};
+  for (const table of known) columns[table] = new Set((await all(`PRAGMA table_info(${table})`)).map((c) => c.name));
+
   const imported = {};
   await tx(async () => {
     for (const table of [...ARCHIVE_TABLES].reverse()) {
@@ -90,7 +95,7 @@ export async function importArchive(archive) {
       let n = 0;
       for (const row of rows) {
         if (table === 'settings' && SECRET_SETTINGS.has(row.key)) continue;
-        const cols = Object.keys(row);
+        const cols = Object.keys(row).filter((c) => columns[table].has(c));
         if (!cols.length) continue;
         await run(
           `INSERT OR REPLACE INTO ${table} (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`,
@@ -101,5 +106,7 @@ export async function importArchive(archive) {
       imported[table] = n;
     }
   });
+  // Files from before bank accounts and expense categories existed lack them.
+  await migrate();
   return imported;
 }
