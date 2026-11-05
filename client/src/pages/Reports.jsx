@@ -3,10 +3,9 @@ import {
   FileBarChart, Download, FileSpreadsheet, FileText, 
   Search, Filter, Calendar, Printer, RefreshCw 
 } from 'lucide-react';
-import { useApp, useFetch, PageHeader, Loading, Empty, Field } from '../components/ui';
-import { money, fmtDate, moneySigned } from '../lib/format';
-import { exportCsv, exportXlsx } from '../lib/export';
-import { downloadReportPdf } from '../lib/pdf';
+import { useFetch, PageHeader, Loading, Empty, Field } from '../components/ui';
+import { fmtDate } from '../lib/format';
+import { ReportTable, ReportExportButtons, RangeFilter } from '../components/ReportView';
 
 const REPORT_TYPES = [
   { id: 'inventory', name: 'Inventory Valuation & Stock Levels', dated: false },
@@ -16,6 +15,8 @@ const REPORT_TYPES = [
   { id: 'purchases-items', name: 'Purchases by Product (Line Items)', dated: true },
   { id: 'outstanding', name: 'Outstanding Balances (Receivables & Payables)', dated: false },
   { id: 'payments', name: 'Payments Ledger (In & Out)', dated: true },
+  { id: 'payment-methods', name: 'Payment Methods (Cash & Bank Ledgers)', dated: true },
+  { id: 'diary-days', name: 'Day-wise Diary Register', dated: true },
   { id: 'assemblies', name: 'Product Assembly & Cost Report', dated: true },
   { id: 'stock-movements', name: 'Complete Stock Movement Audit', dated: true },
   { id: 'expenses', name: 'Operating Expenses Report', dated: true },
@@ -24,7 +25,6 @@ const REPORT_TYPES = [
 ];
 
 export default function Reports({ onNavigate }) {
-  const { settings, lookups, toast } = useApp();
   const [reportType, setReportType] = useState('inventory');
   const [fromDate, setFromDate] = useState(() => {
     const d = new Date();
@@ -34,6 +34,8 @@ export default function Reports({ onNavigate }) {
   const [toDate, setToDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [partyType, setPartyType] = useState('all');
   const [search, setSearch] = useState('');
+  const [account, setAccount] = useState('all');
+  const { data: bankData } = useFetch('/bank-accounts');
 
   const currentReportDef = REPORT_TYPES.find((r) => r.id === reportType) || REPORT_TYPES[0];
 
@@ -42,51 +44,10 @@ export default function Reports({ onNavigate }) {
     to: currentReportDef.dated ? toDate : undefined,
     party: partyType === 'all' ? undefined : partyType,
     q: search || undefined,
+    account: reportType === 'payment-methods' ? account : undefined,
   };
 
   const { data: report, loading, error, reload } = useFetch(`/reports/${reportType}`, params);
-
-  const handleExportPdf = () => {
-    if (!report || !report.rows || report.rows.length === 0) {
-      toast('No data records available to export', 'error');
-      return;
-    }
-    try {
-      downloadReportPdf(report, settings);
-      toast('Report exported to PDF');
-    } catch (err) {
-      console.error(err);
-      toast('Failed to export PDF: ' + err.message, 'error');
-    }
-  };
-
-  const handleExportExcel = () => {
-    if (!report || !report.rows || report.rows.length === 0) {
-      toast('No data records available to export', 'error');
-      return;
-    }
-    try {
-      exportXlsx(report);
-      toast('Report exported to Excel (.xlsx)');
-    } catch (err) {
-      console.error(err);
-      toast('Failed to export Excel: ' + err.message, 'error');
-    }
-  };
-
-  const handleExportCsv = () => {
-    if (!report || !report.rows || report.rows.length === 0) {
-      toast('No data records available to export', 'error');
-      return;
-    }
-    try {
-      exportCsv(report);
-      toast('Report exported to CSV');
-    } catch (err) {
-      console.error(err);
-      toast('Failed to export CSV: ' + err.message, 'error');
-    }
-  };
 
   return (
     <div>
@@ -94,30 +55,7 @@ export default function Reports({ onNavigate }) {
         title="Business Reports & Analytics" 
         subtitle="Generate comprehensive reports, filter by date or party, and export to PDF, Excel, or CSV"
       >
-        <button 
-          type="button" 
-          className="btn btn-primary" 
-          onClick={handleExportPdf} 
-          disabled={!report || loading || !report.rows || report.rows.length === 0}
-        >
-          <Download size={15} /> Export PDF
-        </button>
-        <button 
-          type="button" 
-          className="btn" 
-          onClick={handleExportExcel} 
-          disabled={!report || loading || !report.rows || report.rows.length === 0}
-        >
-          <FileSpreadsheet size={15} /> Export Excel
-        </button>
-        <button 
-          type="button" 
-          className="btn" 
-          onClick={handleExportCsv} 
-          disabled={!report || loading || !report.rows || report.rows.length === 0}
-        >
-          <FileText size={15} /> Export CSV
-        </button>
+        <ReportExportButtons report={report} loading={loading} />
       </PageHeader>
 
       {/* Report Selection Tabs */}
@@ -138,22 +76,19 @@ export default function Reports({ onNavigate }) {
         {/* Filters */}
         <div className="filters">
           {currentReportDef.dated && (
-            <>
-              <Field label="From Date">
-                <input 
-                  type="date" 
-                  value={fromDate} 
-                  onChange={(e) => setFromDate(e.target.value)} 
-                />
-              </Field>
-              <Field label="To Date">
-                <input 
-                  type="date" 
-                  value={toDate} 
-                  onChange={(e) => setToDate(e.target.value)} 
-                />
-              </Field>
-            </>
+            <RangeFilter from={fromDate} to={toDate} onChange={(r) => { setFromDate(r.from); setToDate(r.to); }} />
+          )}
+
+          {reportType === 'payment-methods' && (
+            <Field label="Payment Method / Account">
+              <select value={account} onChange={(e) => setAccount(e.target.value)}>
+                <option value="all">All methods (summary)</option>
+                <option value="cash">Cash in Hand</option>
+                {(bankData?.accounts ?? []).map((a) => (
+                  <option key={a.id} value={`bank:${a.id}`}>{a.owner_name ? `${a.name} (${a.owner_name})` : a.name}</option>
+                ))}
+              </select>
+            </Field>
           )}
 
           {reportType === 'outstanding' && (
@@ -205,65 +140,7 @@ export default function Reports({ onNavigate }) {
                 </div>
               </div>
 
-              <table className="table">
-                <thead>
-                  <tr>
-                    {report.columns.map((c) => (
-                      <th key={c.key} className={c.type === 'money' || c.type === 'number' ? 'r' : ''}>
-                        {c.label}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {report.rows.map((row, idx) => (
-                    <tr key={idx}>
-                      {report.columns.map((c) => {
-                        const val = row[c.key];
-                        return (
-                          <td key={c.key} className={c.type === 'money' || c.type === 'number' ? 'r' : ''}>
-                            {c.type === 'money' ? (
-                              <span className={val < 0 ? 'neg' : ''}>{money(val)}</span>
-                            ) : c.type === 'date' ? (
-                              fmtDate(val)
-                            ) : (
-                              val ?? '—'
-                            )}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  ))}
-                </tbody>
-                {report.totals && (
-                  <tfoot>
-                    <tr>
-                      {report.columns.map((c, i) => {
-                        const val = report.totals[c.key];
-                        return (
-                          <td key={c.key} className={c.type === 'money' || c.type === 'number' ? 'r' : ''}>
-                            {i === 0
-                              ? 'TOTAL'
-                              : c.key in report.totals
-                              ? c.type === 'money'
-                                ? money(val)
-                                : val != null
-                                ? Number(val).toLocaleString()
-                                : ''
-                              : ''}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  </tfoot>
-                )}
-              </table>
-
-              {report.note && (
-                <div className="muted small" style={{ padding: '12px 18px', borderTop: '1px solid var(--border)', fontStyle: 'italic' }}>
-                  * {report.note}
-                </div>
-              )}
+              <ReportTable report={report} />
             </div>
           )}
         </div>

@@ -52,6 +52,26 @@ export const addDays = (s, n) => {
 export const monthStart = (s = today()) => s.slice(0, 7) + '-01';
 export const yearStart = (s = today()) => s.slice(0, 4) + '-01-01';
 
+/** Ready-made date ranges for report filters, all ending today. */
+export function rangePresets() {
+  const t = today();
+  const monthsAgo = (n) => {
+    const d = parseDate(t);
+    d.setMonth(d.getMonth() - n);
+    return toISO(d);
+  };
+  return [
+    { id: 'month', label: 'This month', from: monthStart(t), to: t },
+    { id: '30d', label: 'Last 30 days', from: addDays(t, -29), to: t },
+    { id: '3m', label: 'Last 3 months', from: monthsAgo(3), to: t },
+    { id: '5m', label: 'Last 5 months', from: monthsAgo(5), to: t },
+    { id: '6m', label: 'Last 6 months', from: monthsAgo(6), to: t },
+    { id: 'year', label: 'This year', from: yearStart(t), to: t },
+    // Ends next year so entries dated ahead of today are not silently left out.
+    { id: 'all', label: 'All time', from: '2000-01-01', to: `${Number(t.slice(0, 4)) + 1}-12-31` },
+  ];
+}
+
 export const initials = (name = '') =>
   name
     .split(/\s+/)

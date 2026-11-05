@@ -1,6 +1,7 @@
 // Dashboard analytics, calendar activity feed and reports.
 import { Router } from 'express';
-import { all, get, r2, PRODUCT_STOCK_SQL, CUSTOMER_BAL_SQL, VENDOR_BAL_SQL, docNo } from '../db.js';
+import { all, get, r2, PRODUCT_STOCK_SQL, CUSTOMER_BAL_SQL, VENDOR_BAL_SQL, docNo, accountOfMethod, PAYMENT_METHODS } from '../db.js';
+import { CASH_BOOK_SELECT, decorate as decorateCashBook } from './cashbook.js';
 import { h, bad, today, periodRange, buckets, addDays, startOfMonth, endOfMonth } from '../utils.js';
 
 const r = Router();
@@ -296,6 +297,68 @@ r.get(
   })
 );
 
+
+// ---------- money by payment method ----------
+// Every rupee that moves is one row in exactly one account: the cash drawer or
+// a single bank account. Customer/vendor payments, expenses and the cash book
+// all feed it, so each account's ledger agrees with the Day Diary books.
+const methodLabel = (m) => PAYMENT_METHODS.find((x) => x.value === m)?.label ?? m;
+const bankKey = (id) => `bank:${id ?? 0}`;
+
+async function moneyRows(to) {
+  const rows = [];
+  const add = (row) => rows.push({ ...row, sort: `${row.date} ${row.created_at || ''} ${String(row.id).padStart(8, '0')}` });
+
+  const pays = await all(
+    `SELECT p.*, COALESCE(c.name, v.name) AS party FROM payments p
+     LEFT JOIN customers c ON p.party_type = 'customer' AND c.id = p.party_id
+     LEFT JOIN vendors v ON p.party_type = 'vendor' AND v.id = p.party_id
+     WHERE p.date <= ?`,
+    to
+  );
+  for (const p of pays) {
+    const isIn = p.party_type === 'customer';
+    add({
+      account: accountOfMethod(p.method) === 'cash' ? 'cash' : bankKey(p.bank_account_id),
+      date: p.date, created_at: p.created_at, id: p.id, ref: docNo.payment(p.id),
+      kind: isIn ? 'received' : 'paid',
+      type: isIn ? 'Payment Received' : 'Payment Made',
+      party: p.party,
+      detail: [p.sale_id && `Against ${docNo.sale(p.sale_id)}`, p.purchase_id && `Against ${docNo.purchase(p.purchase_id)}`, p.reference && `Ref ${p.reference}`, p.note].filter(Boolean).join(' · '),
+      method: methodLabel(p.method),
+      in: isIn ? p.amount : 0, out: isIn ? 0 : p.amount,
+    });
+  }
+
+  for (const e of await all('SELECT * FROM expenses WHERE date <= ?', to)) {
+    add({
+      account: accountOfMethod(e.method) === 'cash' ? 'cash' : bankKey(e.bank_account_id),
+      date: e.date, created_at: e.created_at, id: e.id, ref: docNo.expense(e.id), kind: 'expense', type: 'Expense',
+      party: e.category, detail: e.note || '', method: methodLabel(e.method), in: 0, out: e.amount,
+    });
+  }
+
+  for (const raw of await all(`${CASH_BOOK_SELECT} WHERE c.date <= ?`, to)) {
+    const c = decorateCashBook(raw);
+    const base = { date: c.date, created_at: c.created_at, id: c.id, ref: c.ref, kind: 'cashbook', type: c.kind_label, method: '' };
+    const note = [c.category, c.reference, c.note].filter(Boolean).join(' · ');
+    if (c.from_account)
+      add({ ...base, account: c.from_account === 'cash' ? 'cash' : bankKey(c.from_bank_id), party: c.to_label ? `To ${c.to_label}` : c.kind_label, detail: note, in: 0, out: c.amount });
+    if (c.to_account)
+      add({ ...base, account: c.to_account === 'cash' ? 'cash' : bankKey(c.to_bank_id), party: c.from_label ? `From ${c.from_label}` : c.kind_label, detail: note, in: c.amount, out: 0 });
+  }
+  return rows.sort((a, b) => (a.sort < b.sort ? -1 : a.sort > b.sort ? 1 : 0));
+}
+
+/** The cash drawer plus every bank account (closed ones too, their history still counts). */
+async function moneyAccounts(rows) {
+  const accounts = [{ key: 'cash', name: 'Cash in Hand', opening: 0 }];
+  for (const a of await all('SELECT * FROM bank_accounts ORDER BY sort, id'))
+    accounts.push({ key: bankKey(a.id), name: a.owner_name ? `${a.name} (${a.owner_name})` : a.name, opening: a.opening_balance });
+  if (rows.some((x) => x.account === bankKey(null))) accounts.push({ key: bankKey(null), name: 'Unassigned Bank', opening: 0 });
+  return accounts;
+}
+
 // ---------- reports ----------
 const col = (key, label, type = 'text') => ({ key, label, type });
 const sumCols = (rows, keys) => Object.fromEntries(keys.map((k) => [k, r2(rows.reduce((a, x) => a + (Number(x[k]) || 0), 0))]));
@@ -577,6 +640,115 @@ const REPORTS = {
       columns: [col('section', 'Section'), col('item', 'Item'), col('amount', 'Amount', 'money')],
       rows,
       totals: null,
+    };
+  },
+
+  'payment-methods': async (q) => {
+    const rowsAll = await moneyRows(q.to);
+    const accounts = await moneyAccounts(rowsAll);
+    const net = (list) => list.reduce((t, x) => t + x.in - x.out, 0);
+    const period = (x) => x.date >= q.from;
+
+    if (!q.account || q.account === 'all') {
+      const rows = accounts.map((a) => {
+        const mine = rowsAll.filter((x) => x.account === a.key);
+        const opening = a.opening + net(mine.filter((x) => !period(x)));
+        const inRange = mine.filter(period);
+        const money_in = inRange.reduce((t, x) => t + x.in, 0);
+        const money_out = inRange.reduce((t, x) => t + x.out, 0);
+        return { name: a.name, opening: r2(opening), money_in: r2(money_in), money_out: r2(money_out), closing: r2(opening + money_in - money_out), entries: inRange.length };
+      });
+      return {
+        title: 'Payment Methods Summary',
+        note: 'One line per cash drawer and bank account. Pick a single method above to see its full ledger.',
+        columns: [col('name', 'Payment Method / Account'), col('opening', 'Opening', 'money'), col('money_in', 'Money In', 'money'), col('money_out', 'Money Out', 'money'), col('closing', 'Closing', 'money'), col('entries', 'Entries', 'number')],
+        rows,
+        totals: sumCols(rows, ['opening', 'money_in', 'money_out', 'closing', 'entries']),
+      };
+    }
+
+    const acct = accounts.find((a) => a.key === q.account);
+    if (!acct) throw bad('Unknown payment method or bank account');
+    const mine = rowsAll.filter((x) => x.account === acct.key);
+    const opening = r2(acct.opening + net(mine.filter((x) => !period(x))));
+    const needle = q.q ? String(q.q).toLowerCase() : '';
+    let bal = opening;
+    const entries = mine
+      .filter(period)
+      .map((x) => ({ ...x, balance: r2((bal += x.in - x.out)) }))
+      .filter((x) => !needle || [x.ref, x.type, x.party, x.detail, x.method].join(' ').toLowerCase().includes(needle));
+    const rows = [
+      { date: q.from > '2000-01-01' ? q.from : '', ref: 'OPENING', type: 'Opening Balance', party: '', detail: '', method: '', in: 0, out: 0, balance: opening },
+      ...entries,
+    ];
+    return {
+      title: `${acct.name} Ledger`,
+      note: 'Money In and Money Out are from this account\'s point of view. The balance runs from the opening line down.',
+      columns: [
+        col('date', 'Date', 'date'), col('ref', 'Ref'), col('type', 'Type'), col('party', 'Party / Detail'), col('detail', 'Notes'),
+        col('method', 'Method'), col('in', 'Money In', 'money'), col('out', 'Money Out', 'money'), col('balance', 'Balance', 'money'),
+      ],
+      rows,
+      totals: { ...sumCols(entries, ['in', 'out']), balance: rows[rows.length - 1].balance },
+    };
+  },
+
+  'diary-days': async (q) => {
+    const rowsAll = await moneyRows(q.to);
+    const accounts = await moneyAccounts(rowsAll);
+    const bankOpening = accounts.filter((a) => a.key !== 'cash').reduce((t, a) => t + a.opening, 0);
+    const [sales, purchases] = await Promise.all([
+      all('SELECT date, SUM(total) AS t FROM sales WHERE date BETWEEN ? AND ? GROUP BY date', q.from, q.to),
+      all('SELECT date, SUM(total) AS t FROM purchases WHERE date BETWEEN ? AND ? GROUP BY date', q.from, q.to),
+    ]);
+    const days = new Map();
+    const day = (d) => {
+      if (!days.has(d)) days.set(d, { date: d, sales: 0, purchases: 0, received: 0, paid: 0, expenses: 0 });
+      return days.get(d);
+    };
+    for (const x of sales) day(x.date).sales = x.t;
+    for (const x of purchases) day(x.date).purchases = x.t;
+
+    // Walk every movement in date order so each day gets its end-of-day balances.
+    let cash = 0;
+    let bank = bankOpening;
+    const closing = new Map();
+    for (const x of rowsAll) {
+      const d = x.account === 'cash' ? 'cash' : 'bank';
+      if (d === 'cash') cash += x.in - x.out;
+      else bank += x.in - x.out;
+      closing.set(x.date, { cash, bank });
+      if (x.date >= q.from) {
+        const row = day(x.date);
+        if (x.kind === 'received') row.received += x.in;
+        else if (x.kind === 'paid') row.paid += x.out;
+        else if (x.kind === 'expense') row.expenses += x.out;
+      }
+    }
+    // A day with no movement keeps the balance of the last day that had one.
+    let last = { cash: 0, bank: bankOpening };
+    const dates = [...new Set([...days.keys(), ...closing.keys()])].sort();
+    const level = new Map();
+    for (const d of dates) {
+      last = closing.get(d) ?? last;
+      level.set(d, last);
+    }
+    const rows = [...days.values()]
+      .sort((a, b) => (a.date < b.date ? -1 : 1))
+      .map((x) => ({
+        ...x, sales: r2(x.sales), purchases: r2(x.purchases), received: r2(x.received), paid: r2(x.paid), expenses: r2(x.expenses),
+        cash_closing: r2(level.get(x.date).cash), bank_closing: r2(level.get(x.date).bank),
+      }));
+    return {
+      title: 'Day-wise Diary Register',
+      note: 'One line per day that had activity. Cash and bank are end-of-day balances. Open the Day Book for any date to see its full detail.',
+      columns: [
+        col('date', 'Date', 'date'), col('sales', 'Sales', 'money'), col('purchases', 'Purchases', 'money'),
+        col('received', 'Received from Customers', 'money'), col('paid', 'Paid to Vendors', 'money'), col('expenses', 'Expenses', 'money'),
+        col('cash_closing', 'Cash Closing', 'money'), col('bank_closing', 'Bank Closing', 'money'),
+      ],
+      rows,
+      totals: sumCols(rows, ['sales', 'purchases', 'received', 'paid', 'expenses']),
     };
   },
 

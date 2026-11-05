@@ -2,15 +2,17 @@ import React, { useState } from 'react';
 import {
   BookOpen, Wallet, Landmark, Plus, ChevronLeft, ChevronRight, Scale,
   TrendingUp, Receipt, StickyNote, Users, Trash2, ArrowRightLeft,
-  CalendarDays, Calculator, Banknote, CheckCircle2, Circle, AlertTriangle, Wrench, BarChart3,
+  CalendarDays, Calculator, Banknote, CheckCircle2, Circle, AlertTriangle, Wrench, BarChart3, History,
 } from 'lucide-react';
 import { PageHeader, StatCard, Modal, Field, Empty, Loading, Seg, useFetch, useSaver, useApp } from '../components/ui';
 import { MoneyFlowCard, MoneyPositionCard, ExpenseGroupsCard } from '../components/BusinessCharts';
+import { ReportTable, ReportExportButtons, RangeFilter } from '../components/ReportView';
 import { api } from '../lib/api';
-import { money, fmtDateLong, today, addDays, paymentOptions, parsePaymentChoice } from '../lib/format';
+import { money, fmtDateLong, today, addDays, paymentOptions, parsePaymentChoice, rangePresets } from '../lib/format';
 
 const TABS = [
   { id: 'daybook', label: 'Day Book (Roznamcha)', icon: BookOpen },
+  { id: 'history', label: 'History & Export', icon: History },
   { id: 'charts', label: 'Charts', icon: BarChart3 },
   { id: 'trading', label: 'Trading Account', icon: Calculator },
   { id: 'pl', label: 'Profit & Loss', icon: TrendingUp },
@@ -507,6 +509,7 @@ export default function DayDiary() {
 
       <div className="stack" style={{ marginTop: 16 }}>
         {tab === 'daybook' && <DayBook d={d} onDeleteCashBook={save} confirm={confirm} onManage={() => setModal('banks')} />}
+        {tab === 'history' && <HistoryTab onOpenDay={(day) => { setDate(day); setTab('daybook'); }} />}
         {tab === 'charts' && <ChartsTab date={date} />}
         {tab === 'trading' && <TradingTab d={d} />}
         {tab === 'pl' && <ProfitLossTab d={d} />}
@@ -529,6 +532,43 @@ export default function DayDiary() {
 }
 
 // ---------------------------------------------------------------- tabs
+/** Every past day in a calendar range, with export. Click a day to open its Day Book. */
+function HistoryTab({ onOpenDay }) {
+  const [range, setRange] = useState(() => {
+    const { from, to } = rangePresets().find((p) => p.id === '3m');
+    return { from, to };
+  });
+  const { data: report, loading, error } = useFetch('/reports/diary-days', range);
+
+  return (
+    <div className="card">
+      <div className="card-head">
+        <h3><History size={17} /> Past Days — Reports &amp; Export</h3>
+        <div className="row" style={{ gap: 8 }}>
+          <ReportExportButtons report={report} loading={loading} primary={false} />
+        </div>
+      </div>
+      <div className="filters">
+        <RangeFilter from={range.from} to={range.to} onChange={setRange} />
+      </div>
+      {loading && !report ? (
+        <Loading />
+      ) : error ? (
+        <Empty title={`Could not load history: ${error}`} />
+      ) : !report?.rows?.length ? (
+        <Empty title="No activity in this date range" />
+      ) : (
+        <div className="table-wrap">
+          <div className="muted small" style={{ padding: '10px 18px' }}>
+            {report.rows.length} day{report.rows.length === 1 ? '' : 's'} with activity · click a day to open its Day Book
+          </div>
+          <ReportTable report={report} onRowClick={(row) => onOpenDay(row.date)} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DayBook({ d, onDeleteCashBook, confirm, onManage }) {
   const removeEntry = async (row) => {
     if (!(await confirm(`Delete cash book entry ${row.ref}?`))) return;
