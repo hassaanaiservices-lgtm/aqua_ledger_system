@@ -75,10 +75,11 @@ a:hover { text-decoration: underline; }
   box-shadow: 0 0 0 2px #111114;
 }
 
-::-webkit-scrollbar { width: 7px; height: 7px; }
-::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.15); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
-::-webkit-scrollbar-thumb:hover { background-color: rgba(0, 0, 0, 0.28); }
-::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar { width: 13px; height: 13px; }
+::-webkit-scrollbar-thumb { background: rgba(15, 23, 42, 0.38); border-radius: 8px; border: 3px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background-color: rgba(15, 23, 42, 0.6); }
+::-webkit-scrollbar-track { background: rgba(15, 23, 42, 0.06); border-radius: 8px; }
+::-webkit-scrollbar-corner { background: transparent; }
 
 /* ---------------- Sidebar (Stark Pitch Black) ---------------- */
 .app { display: flex; min-height: 100vh; }
