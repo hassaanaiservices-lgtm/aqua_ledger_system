@@ -223,9 +223,9 @@ export default function Sales({ onNavigate }) {
                   <th>Items</th>
                   <th className="r">Subtotal</th>
                   <th className="r">Discount</th>
-                  <th className="r">Invoice Total</th>
-                  <th className="r">Paid Upfront</th>
-                  <th className="actions">Invoice & Actions</th>
+                  <th className="r">Total</th>
+                  <th className="r">Paid</th>
+                  <th className="actions">Actions</th>
                 </tr>
               </thead>
               <tbody>

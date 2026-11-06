@@ -190,8 +190,8 @@ export default function Inventory({ onNavigate }) {
                   <th className="col-product">Product Details</th>
                   <th>Category</th>
                   <th>Type</th>
-                  <th className="r">Stock on Hand</th>
-                  <th className="r">Avg Cost Price</th>
+                  <th className="r">Stock</th>
+                  <th className="r">Avg Cost</th>
                   <th className="r">Stock Value</th>
                   <th className="r">Sale Price</th>
                   <th className="actions">Actions</th>
@@ -221,7 +221,7 @@ export default function Inventory({ onNavigate }) {
                       </td>
                       <td>{p.category || '—'}</td>
                       <td>
-                        <span className={`badge ${typeMeta.badge}`}>{typeMeta.label}</span>
+                        <span className={`badge ${typeMeta.badge}`} title={typeMeta.label}>{typeMeta.short || typeMeta.label}</span>
                       </td>
                       <td className="r">
                         <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>

@@ -128,9 +128,9 @@ export const TYPE_META = {
 };
 
 export const PRODUCT_TYPES = {
-  raw: { label: 'Raw Material', badge: 'amber' },
-  finished: { label: 'Assembled Product', badge: 'violet' },
-  trading: { label: 'Trading Item', badge: 'sky' },
+  raw: { label: 'Raw Material', short: 'Raw', badge: 'amber' },
+  finished: { label: 'Assembled Product', short: 'Assembled', badge: 'violet' },
+  trading: { label: 'Trading Item', short: 'Trading', badge: 'sky' },
 };
 
 // Must stay in step with PAYMENT_METHODS in server/src/db.js: `account` decides

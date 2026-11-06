@@ -384,21 +384,23 @@ table.table { width: 100%; border-collapse: collapse; font-size: 14px; line-heig
 @media (max-width: 1440px) {
   table.table { font-size: 12.5px; }
   .table th, .table td { padding: 9px 8px; }
-  .table th { font-size: 10px; letter-spacing: 0.02em; white-space: normal; line-height: 1.25; }
+  .table th { font-size: 10px; letter-spacing: 0.02em; }
   .table.compact td, .table.compact th { padding: 7px 6px; }
   .table .big { font-size: 14px; }
   .table .badge { font-size: 10.5px; padding: 2px 7px; }
   /* Row action buttons shrink to their icon; the title tooltip still names them. */
-  .table .actions .btn { font-size: 0; gap: 0; padding: 6px; }
-  .table .actions .btn + .btn { margin-left: 1px; }
-  .table .actions { white-space: normal; width: 74px; min-width: 74px; }
+  .table .actions .btn { font-size: 0; gap: 0; padding: 5px; width: auto; height: auto; min-width: 0; }
+  .table .actions .btn + .btn { margin-left: 0; }
   .table .thumb { width: 30px !important; height: 30px !important; }
   .table .col-product { min-width: 160px; }
-  .table .badge { white-space: normal; line-height: 1.2; }
 }
 @media (max-width: 1150px) {
   table.table { font-size: 12px; }
-  .table th, .table td { padding: 8px 6px; }
+  .table th, .table td { padding: 8px 5px; }
+  .table .thumb { display: none !important; }
+  .table .col-product { min-width: 130px; }
+  .table .actions .btn { padding: 4px; }
+  .table .badge { padding: 2px 5px; }
 }
 .line-items td { padding: 6px 8px; }
 .line-items input, .line-items select { padding: 7px 10px; }

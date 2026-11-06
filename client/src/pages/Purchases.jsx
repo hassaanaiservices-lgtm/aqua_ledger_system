@@ -210,13 +210,13 @@ export default function Purchases({ onNavigate }) {
                 <tr>
                   <th>Purchase #</th>
                   <th>Date</th>
-                  <th>Vendor / Supplier</th>
-                  <th>Vendor Bill #</th>
+                  <th>Vendor</th>
+                  <th>Bill #</th>
                   <th>Items</th>
                   <th className="r">Subtotal</th>
-                  <th className="r">Total Amount</th>
-                  <th className="r">Paid to Vendor</th>
-                  <th className="actions">Bill & Actions</th>
+                  <th className="r">Total</th>
+                  <th className="r">Paid</th>
+                  <th className="actions">Actions</th>
                 </tr>
               </thead>
               <tbody>
