@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
 import { 
-  Truck, Plus, Search, Download, Trash2, Calendar, FileText 
+  Truck, Plus, Search, Download, Trash2, Calendar, FileText, Undo2,
 } from 'lucide-react';
 import { useApp, useFetch, PageHeader, Modal, Field, Loading, Empty, useSaver } from '../components/ui';
 import { money, fmtDate, paymentOptions, parsePaymentChoice } from '../lib/format';
 import { api } from '../lib/api';
 import InvoiceModal from '../components/InvoiceModal';
+import ReturnModal from '../components/ReturnModal';
 
 export default function Purchases({ onNavigate }) {
   const { lookups, toast, confirm, loadLookups } = useApp();
@@ -13,6 +14,7 @@ export default function Purchases({ onNavigate }) {
   const [vendorFilter, setVendorFilter] = useState('');
   const [newPurchaseModal, setNewPurchaseModal] = useState(false);
   const [activeBillId, setActiveBillId] = useState(null);
+  const [returnModal, setReturnModal] = useState(false);
   const [runSave, saving] = useSaver();
 
   // New Purchase state
@@ -132,6 +134,9 @@ export default function Purchases({ onNavigate }) {
         title="Purchases & Vendor Bills" 
         subtitle="Record inventory received from suppliers, update costs, post to vendor ledgers, and download bills"
       >
+        <button className="btn" onClick={() => setReturnModal(true)}>
+          <Undo2 size={16} /> Purchase Return
+        </button>
         <button 
           className="btn btn-primary" 
           onClick={() => {
@@ -218,9 +223,10 @@ export default function Purchases({ onNavigate }) {
                 {purchases.map((p) => (
                   <tr key={p.id}>
                     <td>
-                      <span className="badge sky mono strong" style={{ fontSize: '13px' }}>
+                      <span className={`badge ${p.is_return ? 'rose' : 'sky'} mono strong`} style={{ fontSize: '13px' }}>
                         {p.purchase_no}
                       </span>
+                      {p.is_return && <div className="small neg" style={{ marginTop: 3 }}>Purchase return</div>}
                     </td>
                     <td>{fmtDate(p.date)}</td>
                     <td>
@@ -438,6 +444,7 @@ export default function Purchases({ onNavigate }) {
       )}
 
       {/* Bill Modal */}
+      {returnModal && <ReturnModal kind="purchase" onClose={() => setReturnModal(false)} onSaved={reload} />}
       {activeBillId && (
         <InvoiceModal 
           type="purchase" 

@@ -1,6 +1,6 @@
 // Dashboard analytics, calendar activity feed and reports.
 import { Router } from 'express';
-import { all, get, r2, PRODUCT_STOCK_SQL, CUSTOMER_BAL_SQL, VENDOR_BAL_SQL, docNo, accountOfMethod, PAYMENT_METHODS } from '../db.js';
+import { all, get, r2, PRODUCT_STOCK_SQL, CUSTOMER_BAL_SQL, VENDOR_BAL_SQL, docNo, saleNo, purchaseNo, accountOfMethod, PAYMENT_METHODS } from '../db.js';
 import { CASH_BOOK_SELECT, decorate as decorateCashBook } from './cashbook.js';
 import { h, bad, today, periodRange, buckets, addDays, startOfMonth, endOfMonth } from '../utils.js';
 
@@ -59,7 +59,11 @@ async function activities(from, to, types, q) {
   return (await all(
     `SELECT * FROM (${ACTIVITY_SQL}) WHERE ${where.join(' AND ')} ORDER BY date DESC, created_at DESC, id DESC LIMIT 5000`,
     ...params
-  )).map((a) => ({ ...a, amount: r2(a.amount), ref: refFor(a.type, a.id) }));
+  )).map((a) => ({
+    ...a,
+    amount: r2(a.amount),
+    ref: a.type === 'sale' ? saleNo({ id: a.id, total: a.amount }) : a.type === 'purchase' ? purchaseNo({ id: a.id, total: a.amount }) : refFor(a.type, a.id),
+  }));
 }
 
 const MOVE_REF = {
@@ -88,8 +92,12 @@ async function movements(from, to, extraWhere = '', extraParams = []) {
     ...extraParams
   )).map((m) => ({
     ...m,
-    ref: (MOVE_REF[m.ref_type] || ((x) => x))(m.ref_id ?? m.id),
-    label: MOVE_LABEL[m.ref_type] || m.ref_type,
+    // Returns reuse the sale/purchase ref_type; the direction of the stock tells them apart.
+    ...(m.ref_type === 'sale' && m.qty > 0
+      ? { ref: docNo.saleReturn(m.ref_id), label: 'Sales return' }
+      : m.ref_type === 'purchase' && m.qty < 0
+        ? { ref: docNo.purchaseReturn(m.ref_id), label: 'Purchase return' }
+        : { ref: (MOVE_REF[m.ref_type] || ((x) => x))(m.ref_id ?? m.id), label: MOVE_LABEL[m.ref_type] || m.ref_type }),
   }));
 }
 
@@ -145,12 +153,12 @@ r.get(
 // ---------- dashboard ----------
 async function periodTotals(from, to) {
   const s = await get(
-    `SELECT COUNT(*) n, COALESCE(SUM(total),0) total, COALESCE(SUM(cost_total),0) cost, COALESCE(SUM(discount),0) disc
+    `SELECT COUNT(CASE WHEN total >= 0 THEN 1 END) n, COALESCE(SUM(total),0) total, COALESCE(SUM(cost_total),0) cost, COALESCE(SUM(discount),0) disc
      FROM sales WHERE date BETWEEN ? AND ?`,
     from,
     to
   );
-  const p = await get(`SELECT COUNT(*) n, COALESCE(SUM(total),0) total FROM purchases WHERE date BETWEEN ? AND ?`, from, to);
+  const p = await get(`SELECT COUNT(CASE WHEN total >= 0 THEN 1 END) n, COALESCE(SUM(total),0) total FROM purchases WHERE date BETWEEN ? AND ?`, from, to);
   const e = await get(`SELECT COUNT(*) n, COALESCE(SUM(amount),0) total FROM expenses WHERE date BETWEEN ? AND ?`, from, to);
   const a = await get(
     `SELECT COUNT(*) n, COALESCE(SUM(total_cost),0) total, COALESCE(SUM(qty),0) qty, COALESCE(SUM(labor_cost),0) labor,
@@ -408,7 +416,7 @@ const REPORTS = {
        FROM sales s JOIN customers c ON c.id = s.customer_id WHERE ${where.join(' AND ')} ORDER BY s.date, s.id`,
       ...params
     )).map((s) => ({
-      date: s.date, ref: docNo.sale(s.id), id: s.id, customer: s.customer, items: s.items, subtotal: s.subtotal, discount: s.discount,
+      date: s.date, ref: saleNo(s), id: s.id, customer: s.customer, items: s.items, subtotal: s.subtotal, discount: s.discount,
       tax: s.tax, total: s.total, paid: r2(s.paid), due: r2(s.total - s.paid), cost: r2(s.cost_total), profit: r2(s.total - s.cost_total),
     }));
     return {
@@ -434,7 +442,7 @@ const REPORTS = {
        WHERE ${where.join(' AND ')} ORDER BY s.date, s.id`,
       ...params
     )).map((x) => ({
-      date: x.date, ref: docNo.sale(x.sid), customer: x.customer, product: x.product, qty: x.qty, unit: x.unit,
+      date: x.date, ref: x.qty < 0 ? docNo.saleReturn(x.sid) : docNo.sale(x.sid), customer: x.customer, product: x.product, qty: x.qty, unit: x.unit,
       unit_price: x.unit_price, total: x.line_total, cost: r2(x.unit_cost * x.qty), profit: r2(x.line_total - x.unit_cost * x.qty),
     }));
     return {
@@ -461,7 +469,7 @@ const REPORTS = {
        FROM purchases pu JOIN vendors v ON v.id = pu.vendor_id WHERE ${where.join(' AND ')} ORDER BY pu.date, pu.id`,
       ...params
     )).map((p) => ({
-      date: p.date, ref: docNo.purchase(p.id), id: p.id, bill: p.vendor_bill_no || '', vendor: p.vendor, items: p.items,
+      date: p.date, ref: purchaseNo(p), id: p.id, bill: p.vendor_bill_no || '', vendor: p.vendor, items: p.items,
       subtotal: p.subtotal, discount: p.discount, tax: p.tax, total: p.total, paid: r2(p.paid), due: r2(p.total - p.paid),
     }));
     return {
@@ -487,7 +495,7 @@ const REPORTS = {
        WHERE ${where.join(' AND ')} ORDER BY pu.date, pu.id`,
       ...params
     )).map((x) => ({
-      date: x.date, ref: docNo.purchase(x.pid), vendor: x.vendor, product: x.product, qty: x.qty, unit: x.unit,
+      date: x.date, ref: x.qty < 0 ? docNo.purchaseReturn(x.pid) : docNo.purchase(x.pid), vendor: x.vendor, product: x.product, qty: x.qty, unit: x.unit,
       unit_cost: x.unit_cost, total: x.line_total,
     }));
     return {

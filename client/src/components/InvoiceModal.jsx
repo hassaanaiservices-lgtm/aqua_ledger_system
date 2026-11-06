@@ -99,7 +99,7 @@ export default function InvoiceModal({ type = 'sale', id, onClose }) {
                 </div>
                 <div style={{ textAlign: 'right' }}>
                   <div className="badge aqua" style={{ fontSize: '13px', padding: '6px 14px', marginBottom: '8px' }}>
-                    {isSale ? 'OFFICIAL INVOICE' : 'PURCHASE BILL'}
+                    {doc.is_return ? (isSale ? 'SALES RETURN' : 'PURCHASE RETURN') : isSale ? 'OFFICIAL INVOICE' : 'PURCHASE BILL'}
                   </div>
                   <div style={{ fontSize: '16px', fontWeight: 700 }}>{docNo}</div>
                   <div className="muted small">Date: {fmtDate(doc.date)}</div>

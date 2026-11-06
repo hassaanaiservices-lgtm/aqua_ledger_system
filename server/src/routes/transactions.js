@@ -1,7 +1,7 @@
 // Sales, purchases and expenses. Sales/purchases automatically write stock
 // movements and (optionally) a linked payment, all inside one transaction.
 import { Router } from 'express';
-import { all, get, run, tx, r2, stockOf, avgCostOf, docNo, getSetting, EXPENSE_GROUPS, normalizeMethod, requireBankAccountId } from '../db.js';
+import { all, get, run, tx, r2, stockOf, avgCostOf, docNo, saleNo, purchaseNo, getSetting, EXPENSE_GROUPS, normalizeMethod, requireBankAccountId } from '../db.js';
 import { h, bad, notFound, num, str, today } from '../utils.js';
 import { buildLedger } from './parties.js';
 
@@ -47,7 +47,7 @@ r.get(
        FROM sales s JOIN customers c ON c.id = s.customer_id ${where}
        ORDER BY s.date DESC, s.id DESC LIMIT 2000`,
       ...params
-    )).map((s) => ({ ...s, invoice_no: docNo.sale(s.id), profit: r2(s.total - s.cost_total) }));
+    )).map((s) => ({ ...s, invoice_no: saleNo(s), is_return: s.total < 0, profit: r2(s.total - s.cost_total) }));
   })
 );
 
@@ -71,7 +71,8 @@ r.get(
 
     return {
       ...s,
-      invoice_no: docNo.sale(s.id),
+      invoice_no: saleNo(s),
+      is_return: s.total < 0,
       customer,
       items,
       payments,
@@ -189,6 +190,14 @@ r.delete(
   h(async (req) => {
     const s = await get('SELECT * FROM sales WHERE id = ?', req.params.id);
     if (!s) throw notFound();
+    if (s.total < 0) {
+      for (const it of await all('SELECT product_id, -SUM(qty) q FROM sale_items WHERE sale_id = ? GROUP BY product_id', s.id)) {
+        if ((await stockOf(it.product_id)) - it.q < -0.0001) {
+          const name = (await get('SELECT name FROM products WHERE id = ?', it.product_id)).name;
+          throw bad(`Cannot delete: the returned "${name}" has already been sold or used again.`);
+        }
+      }
+    }
     await tx(async () => {
       await run(`DELETE FROM stock_movements WHERE ref_type = 'sale' AND ref_id = ?`, s.id);
       await run('DELETE FROM payments WHERE sale_id = ?', s.id);
@@ -211,7 +220,7 @@ r.get(
        FROM purchases pu JOIN vendors v ON v.id = pu.vendor_id ${where}
        ORDER BY pu.date DESC, pu.id DESC LIMIT 2000`,
       ...params
-    )).map((p) => ({ ...p, purchase_no: docNo.purchase(p.id) }));
+    )).map((p) => ({ ...p, purchase_no: purchaseNo(p), is_return: p.total < 0 }));
   })
 );
 
@@ -232,7 +241,8 @@ r.get(
     const previous = idx > 0 ? ledger.entries[idx - 1].balance : ledger.party.opening_balance;
     return {
       ...p,
-      purchase_no: docNo.purchase(p.id),
+      purchase_no: purchaseNo(p),
+      is_return: p.total < 0,
       vendor,
       items,
       payments,
@@ -351,6 +361,120 @@ r.delete(
       await run('DELETE FROM purchases WHERE id = ?', p.id);
     });
     return { ok: true };
+  })
+);
+
+
+// ======================= RETURNS =======================
+// A sales return is a sale with negative quantities and total: stock comes back,
+// the customer owes less, and revenue and cost of goods both go down. A purchase
+// return mirrors it for vendors. Picking the original document fixes the price
+// and cost to what was really charged and limits the quantity to what it had.
+async function cleanReturnItems(items, original, originalItems, priceKey, label) {
+  if (!Array.isArray(items) || !items.length) throw bad('Add at least one item to return');
+  const rows = [];
+  for (const [i, it] of items.entries()) {
+    const qty = num(it.qty);
+    if (qty <= 0) continue;
+    const product = await get('SELECT * FROM products WHERE id = ?', num(it.product_id));
+    if (!product) throw bad(`Row ${i + 1}: select a product`);
+    const price = num(it[priceKey]);
+    if (price < 0) throw bad(`Row ${i + 1}: price cannot be negative`);
+    if (original) {
+      const had = originalItems.filter((x) => x.product_id === product.id).reduce((t, x) => t + x.qty, 0);
+      if (!had) throw bad(`"${product.name}" is not on ${label}`);
+      if (qty > had + 1e-9) throw bad(`"${product.name}": only ${r2(had)} on ${label}, cannot return ${qty}`);
+    }
+    rows.push({ product, qty, price, line: r2(qty * price) });
+  }
+  if (!rows.length) throw bad('Enter a quantity for at least one item');
+  return rows;
+}
+
+r.post(
+  '/sales/returns',
+  h(async (req) => {
+    const b = req.body;
+    const customerId = num(b.customer_id);
+    if (!await get('SELECT id FROM customers WHERE id = ?', customerId)) throw bad('Select a customer');
+    const original = b.sale_id ? await get('SELECT * FROM sales WHERE id = ? AND total >= 0', num(b.sale_id)) : null;
+    if (b.sale_id && !original) throw bad('Original invoice not found');
+    if (original && original.customer_id !== customerId) throw bad('That invoice belongs to another customer');
+    const originalItems = original ? await all('SELECT * FROM sale_items WHERE sale_id = ?', original.id) : [];
+    const items = await cleanReturnItems(b.items, original, originalItems, 'unit_price', original && docNo.sale(original.id));
+    const date = str(b.date) || today();
+    const total = r2(items.reduce((a, i) => a + i.line, 0));
+    const note = [original && `Return of ${docNo.sale(original.id)}`, str(b.note)].filter(Boolean).join(' · ') || null;
+
+    return await tx(async () => {
+      const info = await run(
+        'INSERT INTO sales (customer_id,date,subtotal,discount,tax,total,note) VALUES (?,?,?,0,0,?,?)',
+        customerId, date, -total, -total, note
+      );
+      const id = Number(info.lastInsertRowid);
+      let cost = 0;
+      for (const it of items) {
+        // Goods come back at what they cost when sold, so profit reverses exactly.
+        const unitCost = originalItems.find((x) => x.product_id === it.product.id)?.unit_cost ?? (await avgCostOf(it.product.id));
+        cost += unitCost * it.qty;
+        await run(
+          'INSERT INTO sale_items (sale_id,product_id,qty,unit_price,unit_cost,line_total) VALUES (?,?,?,?,?,?)',
+          id, it.product.id, -it.qty, it.price, unitCost, -it.line
+        );
+        await run(
+          `INSERT INTO stock_movements (product_id,date,qty,unit_cost,ref_type,ref_id,note) VALUES (?,?,?,?, 'sale', ?, ?)`,
+          it.product.id, date, it.qty, unitCost, id, `Returned on ${docNo.saleReturn(id)}`
+        );
+      }
+      await run('UPDATE sales SET cost_total = ? WHERE id = ?', -r2(cost), id);
+      return { id, invoice_no: docNo.saleReturn(id) };
+    });
+  })
+);
+
+r.post(
+  '/purchases/returns',
+  h(async (req) => {
+    const b = req.body;
+    const vendorId = num(b.vendor_id);
+    if (!await get('SELECT id FROM vendors WHERE id = ?', vendorId)) throw bad('Select a vendor');
+    const original = b.purchase_id ? await get('SELECT * FROM purchases WHERE id = ? AND total >= 0', num(b.purchase_id)) : null;
+    if (b.purchase_id && !original) throw bad('Original purchase bill not found');
+    if (original && original.vendor_id !== vendorId) throw bad('That bill belongs to another vendor');
+    const originalItems = original ? await all('SELECT * FROM purchase_items WHERE purchase_id = ?', original.id) : [];
+    const items = await cleanReturnItems(b.items, original, originalItems, 'unit_cost', original && docNo.purchase(original.id));
+
+    const need = {};
+    for (const it of items) need[it.product.id] = (need[it.product.id] || 0) + it.qty;
+    for (const [pid, q] of Object.entries(need)) {
+      const have = await stockOf(pid);
+      if (have + 1e-9 < q) {
+        const p = items.find((i) => i.product.id === Number(pid)).product;
+        throw bad(`Not enough stock of "${p.name}" to return. Available: ${r2(have)} ${p.unit}, returning: ${q}`);
+      }
+    }
+    const date = str(b.date) || today();
+    const total = r2(items.reduce((a, i) => a + i.line, 0));
+    const note = [original && `Return of ${docNo.purchase(original.id)}`, str(b.note)].filter(Boolean).join(' · ') || null;
+
+    return await tx(async () => {
+      const info = await run(
+        'INSERT INTO purchases (vendor_id,date,vendor_bill_no,subtotal,discount,tax,total,note) VALUES (?,?,NULL,?,0,0,?,?)',
+        vendorId, date, -total, -total, note
+      );
+      const id = Number(info.lastInsertRowid);
+      for (const it of items) {
+        await run(
+          'INSERT INTO purchase_items (purchase_id,product_id,qty,unit_cost,line_total) VALUES (?,?,?,?,?)',
+          id, it.product.id, -it.qty, it.price, -it.line
+        );
+        await run(
+          `INSERT INTO stock_movements (product_id,date,qty,unit_cost,ref_type,ref_id,note) VALUES (?,?,?,?, 'purchase', ?, ?)`,
+          it.product.id, date, -it.qty, it.price, id, `Returned on ${docNo.purchaseReturn(id)}`
+        );
+      }
+      return { id, purchase_no: docNo.purchaseReturn(id) };
+    });
   })
 );
 

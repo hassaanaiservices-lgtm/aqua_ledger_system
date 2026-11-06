@@ -4,7 +4,7 @@
 // (sales, purchases, payments, expenses, cash book, stock movements, assemblies)
 // so the diary can never drift out of step with the customer and vendor ledgers.
 import { Router } from 'express';
-import { all, get, run, r2, docNo, IS_CASH_SQL, accountOfMethod } from '../db.js';
+import { all, get, run, r2, docNo, saleNo, purchaseNo, IS_CASH_SQL, accountOfMethod } from '../db.js';
 import { h, bad, today, addDays, startOfWeek } from '../utils.js';
 import { cashBookFlows, cashBookKindTotals, decorate as decorateCashBook, bankBooks, CASH_BOOK_SELECT } from './cashbook.js';
 
@@ -84,7 +84,7 @@ r.get(
       date
     )).map((s) => ({
       ...s,
-      invoice_no: docNo.sale(s.id),
+      invoice_no: saleNo(s),
       due: r2(s.total - s.paid_on_invoice),
       profit: r2(s.total - s.cost_total),
     }));
@@ -119,7 +119,7 @@ r.get(
       date
     )).map((pu) => ({
       ...pu,
-      purchase_no: docNo.purchase(pu.id),
+      purchase_no: purchaseNo(pu),
       due: r2(pu.total - pu.paid_on_bill),
     }));
 

@@ -539,4 +539,11 @@ export const docNo = {
   expense: (id) => `EXP-${String(id).padStart(5, '0')}`,
   adjustment: (id) => `ADJ-${String(id).padStart(5, '0')}`,
   cashbook: (id) => `CB-${String(id).padStart(5, '0')}`,
+  saleReturn: (id) => `SR-${String(id).padStart(5, '0')}`,
+  purchaseReturn: (id) => `PR-${String(id).padStart(5, '0')}`,
 };
+
+// A return is stored as a sale/purchase with a negative total, so every balance,
+// stock and profit figure nets it out without any extra code.
+export const saleNo = (s) => (s.total < 0 ? docNo.saleReturn(s.id) : docNo.sale(s.id));
+export const purchaseNo = (p) => (p.total < 0 ? docNo.purchaseReturn(p.id) : docNo.purchase(p.id));

@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
 import { 
   ShoppingCart, Plus, Search, Download, Eye, Trash2, 
-  UserPlus, Calendar, CreditCard, DollarSign, FileText, CheckCircle2 
+  UserPlus, Calendar, CreditCard, DollarSign, FileText, CheckCircle2, Undo2
 } from 'lucide-react';
 import { useApp, useFetch, PageHeader, Modal, Field, Loading, Empty, useSaver } from '../components/ui';
 import { money, fmtDate, paymentOptions, parsePaymentChoice } from '../lib/format';
 import { api } from '../lib/api';
 import InvoiceModal from '../components/InvoiceModal';
+import ReturnModal from '../components/ReturnModal';
 
 export default function Sales({ onNavigate }) {
   const { lookups, toast, confirm, loadLookups } = useApp();
@@ -14,6 +15,7 @@ export default function Sales({ onNavigate }) {
   const [customerFilter, setCustomerFilter] = useState('');
   const [newSaleModal, setNewSaleModal] = useState(false);
   const [activeInvoiceId, setActiveInvoiceId] = useState(null);
+  const [returnModal, setReturnModal] = useState(false);
   const [runSave, saving] = useSaver();
 
   // New Sale Form state
@@ -143,6 +145,9 @@ export default function Sales({ onNavigate }) {
         title="Sales & Invoicing" 
         subtitle="Create sales invoices, deduct inventory automatically, post to customer ledgers, and download PDFs"
       >
+        <button className="btn" onClick={() => setReturnModal(true)}>
+          <Undo2 size={16} /> Sales Return
+        </button>
         <button 
           className="btn btn-primary" 
           onClick={() => {
@@ -162,7 +167,7 @@ export default function Sales({ onNavigate }) {
       <div className="grid grid-3 mb">
         <div className="card card-pad">
           <span className="muted small">Recorded Sales Invoices</span>
-          <div className="stat-value" style={{ color: 'var(--green)' }}>{sales?.length || 0}</div>
+          <div className="stat-value" style={{ color: 'var(--green)' }}>{sales?.filter((s) => !s.is_return).length || 0}</div>
           <span className="muted small">Total billing: {money(totalSalesRevenue)}</span>
         </div>
         <div className="card card-pad">
@@ -227,9 +232,10 @@ export default function Sales({ onNavigate }) {
                 {sales.map((s) => (
                   <tr key={s.id}>
                     <td>
-                      <span className="badge green mono strong" style={{ fontSize: '13px' }}>
+                      <span className={`badge ${s.is_return ? 'rose' : 'green'} mono strong`} style={{ fontSize: '13px' }}>
                         {s.invoice_no}
                       </span>
+                      {s.is_return && <div className="small neg" style={{ marginTop: 3 }}>Sales return</div>}
                     </td>
                     <td>{fmtDate(s.date)}</td>
                     <td>
@@ -453,6 +459,7 @@ export default function Sales({ onNavigate }) {
       )}
 
       {/* Invoice Modal for View / Download */}
+      {returnModal && <ReturnModal kind="sale" onClose={() => setReturnModal(false)} onSaved={reload} />}
       {activeInvoiceId && (
         <InvoiceModal 
           type="sale" 

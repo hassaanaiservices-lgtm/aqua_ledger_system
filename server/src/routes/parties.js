@@ -2,7 +2,7 @@
 // Customer balance = opening + sales - payments received  (positive => customer owes us)
 // Vendor balance   = opening + purchases - payments made  (positive => we owe vendor)
 import { Router } from 'express';
-import { all, get, run, tx, r2, CUSTOMER_BAL_SQL, VENDOR_BAL_SQL, customerBalance, vendorBalance, docNo, normalizeMethod, requireBankAccountId, PAYMENT_METHODS } from '../db.js';
+import { all, get, run, tx, r2, CUSTOMER_BAL_SQL, VENDOR_BAL_SQL, customerBalance, vendorBalance, docNo, saleNo, purchaseNo, normalizeMethod, requireBankAccountId, PAYMENT_METHODS } from '../db.js';
 import { h, bad, notFound, num, str, today } from '../utils.js';
 
 const r = Router();
@@ -73,9 +73,9 @@ export async function buildLedger(kind, id, from, to) {
       sort: docKey[d.id],
       type: c.docType,
       doc_id: d.id,
-      ref: docNo[c.docType](d.id),
+      ref: kind === 'customer' ? saleNo(d) : purchaseNo(d),
       description:
-        `${c.docLabel} (${d.item_count} item${d.item_count === 1 ? '' : 's'})` +
+        `${d.total < 0 ? `${c.docLabel} Return` : c.docLabel} (${d.item_count} item${d.item_count === 1 ? '' : 's'})` +
         (d.vendor_bill_no ? ` · Bill #${d.vendor_bill_no}` : '') +
         (d.note ? ` · ${d.note}` : ''),
       charge: r2(d.total),

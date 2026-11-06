@@ -158,7 +158,7 @@ function signatures(doc, y, left, right) {
 }
 
 /** Shared template for sale invoices and purchase bills. */
-function tradeDocument({ settings, title, number, date, party, partyLabel, items, priceKey, totals, account, extraMeta = [], note, filename }) {
+function tradeDocument({ settings, isSale, title, number, date, party, partyLabel, items, priceKey, totals, account, extraMeta = [], note, filename }) {
   const doc = new jsPDF({ unit: 'mm', format: 'a4' });
   const W = doc.internal.pageSize.getWidth();
   let y = header(doc, settings, title, [`No: ${number}`, `Date: ${fmtDate(date)}`, ...extraMeta]);
@@ -169,7 +169,7 @@ function tradeDocument({ settings, title, number, date, party, partyLabel, items
   const y2 = infoBox(doc, 14 + boxW + 6, y, boxW, 'Account Summary', [
     `Balance Due: ${fmtSigned(account.balance_after)}`,
     `Previous Balance: ${fmtSigned(account.previous)}`,
-    `This ${title === 'INVOICE' ? 'Invoice' : 'Bill'}: ${fmt(totals.total)}`,
+    `This ${isSale ? 'Invoice' : 'Bill'}: ${fmt(totals.total)}`,
     `Paid: ${fmt(totals.paid)}`,
   ]);
   y = Math.max(y1, y2) + 6;
@@ -263,21 +263,22 @@ function tradeDocument({ settings, title, number, date, party, partyLabel, items
     doc.addPage();
     sy = 60;
   }
-  signatures(doc, sy, title === 'INVOICE' ? 'Customer Signature' : 'Received By', 'Authorized Signature');
+  signatures(doc, sy, isSale ? 'Customer Signature' : 'Received By', 'Authorized Signature');
   if (settings.invoice_footer) {
     doc.setFont('helvetica', 'italic');
     doc.setFontSize(9.5);
     doc.setTextColor(...C.indigo);
     doc.text(settings.invoice_footer, W / 2, sy + 14, { align: 'center' });
   }
-  pageFooters(doc, settings, `${title === 'INVOICE' ? 'Invoice' : 'Purchase Bill'} ${number}`);
+  pageFooters(doc, settings, `${title === 'INVOICE' ? 'Invoice' : title === 'PURCHASE BILL' ? 'Purchase Bill' : title} ${number}`);
   doc.save(filename);
 }
 
 export function downloadSaleInvoice(sale, settings) {
   tradeDocument({
     settings,
-    title: 'INVOICE',
+    isSale: true,
+    title: sale.is_return ? 'SALES RETURN' : 'INVOICE',
     number: sale.invoice_no,
     date: sale.date,
     party: sale.customer,
@@ -294,7 +295,8 @@ export function downloadSaleInvoice(sale, settings) {
 export function downloadPurchaseBill(p, settings) {
   tradeDocument({
     settings,
-    title: 'PURCHASE BILL',
+    isSale: false,
+    title: p.is_return ? 'PURCHASE RETURN' : 'PURCHASE BILL',
     number: p.purchase_no,
     date: p.date,
     party: p.vendor,

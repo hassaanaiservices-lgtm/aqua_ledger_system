@@ -358,18 +358,21 @@ input.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 /* ---------------- Tables ---------------- */
 .table-wrap { overflow: auto; }
-table.table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+table.table { width: 100%; border-collapse: collapse; font-size: 14px; line-height: 1.45; }
 .table th {
-  text-align: left; font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.05em;
-  color: var(--text-3); padding: 12px 16px; border-bottom: 1px solid var(--border);
-  position: sticky; top: 0; background: #f8fafc; z-index: 1; white-space: nowrap;
+  text-align: left; font-weight: 700; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-2); padding: 12px 16px; border-bottom: 2px solid #dfe5ee;
+  position: sticky; top: 0; background: #eef2f7; z-index: 1; white-space: nowrap;
 }
-.table td { padding: 12px 16px; border-bottom: 1px solid var(--border); vertical-align: middle; color: #111114; }
+.table td { padding: 13px 16px; border-bottom: 1px solid #e8edf3; vertical-align: middle; color: #111114; }
+/* Alternate row shading so the eye can follow a line across wide tables. */
+.table tbody tr:nth-child(even) { background: #f8fafc; }
 .table tbody tr { transition: background 0.1s ease; }
-.table tbody tr:hover { background: #f8fafc; }
+.table tbody tr:hover { background: #e8f0fe; }
 .table tbody tr.clickable { cursor: pointer; }
-.table tfoot td { font-weight: 700; background: #f1f5f9; border-bottom: 0; }
+.table tfoot td { font-weight: 700; background: #eef2f7; border-top: 2px solid #dfe5ee; border-bottom: 0; }
 .table .r, .r { text-align: right; font-variant-numeric: tabular-nums; }
+.table td.r { white-space: nowrap; }
 .table .c { text-align: center; }
 .table .nowrap { white-space: nowrap; }
 .table .actions { text-align: right; white-space: nowrap; width: 1%; }
