@@ -209,4 +209,31 @@ r.delete(
   })
 );
 
+// Every opening-stock entry at once. Sales, purchases, assemblies and manual
+// adjustments are never touched, so stock sold out of the opening stock goes negative.
+const OPENING_PREVIEW_SQL = `
+  SELECT p.id, p.name,
+    SUM(CASE WHEN m.ref_type = 'opening' THEN m.qty ELSE 0 END) AS opening,
+    SUM(m.qty) AS stock
+  FROM stock_movements m JOIN products p ON p.id = m.product_id
+  GROUP BY p.id HAVING SUM(CASE WHEN m.ref_type = 'opening' THEN 1 ELSE 0 END) > 0
+  ORDER BY p.name`;
+
+r.get(
+  '/opening-stock',
+  h(async () => {
+    const rows = (await all(OPENING_PREVIEW_SQL)).map((x) => ({ ...x, after: r2(x.stock - x.opening) }));
+    const entries = (await get("SELECT COUNT(*) AS c FROM stock_movements WHERE ref_type = 'opening'")).c;
+    return { entries, products: rows, negative_after: rows.filter((x) => x.after < 0).length };
+  })
+);
+
+r.delete(
+  '/opening-stock',
+  h(async () => {
+    const res = await run("DELETE FROM stock_movements WHERE ref_type = 'opening'");
+    return { ok: true, deleted: res.changes };
+  })
+);
+
 export default r;

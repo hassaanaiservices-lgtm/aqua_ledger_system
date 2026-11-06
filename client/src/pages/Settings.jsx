@@ -18,6 +18,7 @@ export default function Settings({ onNavigate }) {
   const [downloadingReadable, setDownloadingReadable] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [restoringArchive, setRestoringArchive] = useState(false);
+  const [removingOpening, setRemovingOpening] = useState(false);
   const fileInputRef = useRef(null);
   const archiveInputRef = useRef(null);
   const [runSave, saving] = useSaver();
@@ -171,6 +172,29 @@ export default function Settings({ onNavigate }) {
     } finally {
       setRestoring(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const handleRemoveOpeningStock = async () => {
+    try {
+      const preview = await api.get('/opening-stock');
+      if (!preview.entries) return toast('There is no opening stock to remove');
+      const ok = await confirm({
+        title: 'Remove all opening stock?',
+        message: `This deletes ${preview.entries} opening stock entr${preview.entries === 1 ? 'y' : 'ies'} for ${preview.products.length} product(s). Sales, purchases, assemblies and your adjustments stay as they are. ${preview.negative_after} product(s) will show negative stock until you enter real stock. A full backup (.json) downloads first. This cannot be undone.`,
+        okText: 'Remove Opening Stock',
+        danger: true,
+      });
+      if (!ok) return;
+      setRemovingOpening(true);
+      await downloadReadableBackup();
+      const res = await api.del('/opening-stock');
+      toast(`Removed ${res.deleted} opening stock entries`);
+      changed();
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      setRemovingOpening(false);
     }
   };
 
@@ -444,6 +468,25 @@ export default function Settings({ onNavigate }) {
                     >
                       <Upload size={13} className={restoring ? 'spinner' : ''} />
                       {restoring ? 'Restoring Database...' : 'Upload & Restore .db'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ background: '#fff5f5', border: '1px solid #fecaca', borderRadius: 10, padding: '14px 16px', marginBottom: 16 }}>
+                <div className="row-between wrap" style={{ gap: 12 }}>
+                  <div style={{ flex: 1, minWidth: 220 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13, color: '#111114', display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <Trash2 size={14} color="var(--rose)" /> Remove All Opening Stock
+                    </div>
+                    <p className="muted small" style={{ margin: '4px 0 0', lineHeight: 1.45 }}>
+                      Deletes only the opening stock entries of every product. Sales, purchases, assemblies and
+                      adjustments are kept. Items already sold from opening stock will show negative stock.
+                    </p>
+                  </div>
+                  <div>
+                    <button type="button" className="btn btn-danger btn-sm" onClick={handleRemoveOpeningStock} disabled={removingOpening}>
+                      <Trash2 size={13} /> {removingOpening ? 'Removing…' : 'Remove Opening Stock'}
                     </button>
                   </div>
                 </div>
