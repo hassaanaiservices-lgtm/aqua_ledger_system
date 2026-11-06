@@ -5,11 +5,12 @@ import {
 } from 'lucide-react';
 import { useApp, useFetch, PageHeader, Modal, Field, Loading, Empty, useSaver } from '../components/ui';
 import { money, fmtDate, PRODUCT_TYPES } from '../lib/format';
-import { api, productImageUrl } from '../lib/api';
+import { api, productImageUrl, downloadReadableBackup } from '../lib/api';
 import { fileToDataUrl, imageKB, PRODUCT_LIMITS } from '../lib/image';
 
 export default function Inventory({ onNavigate }) {
-  const { toast, confirm } = useApp();
+  const { toast, confirm, changed } = useApp();
+  const [removingOpening, setRemovingOpening] = useState(false);
   const [tab, setTab] = useState('all'); // all, finished, raw, trading
   const [search, setSearch] = useState('');
   const [productModal, setProductModal] = useState(null); // null, 'new', or product object
@@ -94,12 +95,38 @@ export default function Inventory({ onNavigate }) {
   const totalValue = products?.reduce((sum, p) => sum + p.stock_value, 0) || 0;
   const lowCount = products?.filter((p) => p.low_stock).length || 0;
 
+  const handleRemoveOpeningStock = async () => {
+    try {
+      const preview = await api.get('/opening-stock');
+      if (!preview.entries) return toast('There is no opening stock to remove');
+      const ok = await confirm({
+        title: 'Remove all opening stock?',
+        message: `This deletes ${preview.entries} opening stock entr${preview.entries === 1 ? 'y' : 'ies'} for ${preview.products.length} product(s). Sales, purchases, assemblies and your adjustments stay as they are. ${preview.negative_after} product(s) will show negative stock until you enter real stock. A full backup (.json) downloads first. This cannot be undone.`,
+        okText: 'Remove Opening Stock',
+        danger: true,
+      });
+      if (!ok) return;
+      setRemovingOpening(true);
+      await downloadReadableBackup();
+      const res = await api.del('/opening-stock');
+      toast(`Removed ${res.deleted} opening stock entries`);
+      changed();
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      setRemovingOpening(false);
+    }
+  };
+
   return (
     <div>
       <PageHeader 
         title="Product Inventory Management" 
         subtitle="Track raw materials, components, assembled products, and stock movements"
       >
+        <button className="btn btn-danger" onClick={handleRemoveOpeningStock} disabled={removingOpening} title="Delete the opening stock of every product so stock can be entered through purchases">
+          <Trash2 size={16} /> {removingOpening ? 'Removing…' : 'Delete Opening Stock'}
+        </button>
         <button className="btn btn-primary" onClick={() => setProductModal({})}>
           <Plus size={16} /> Add Product / Item
         </button>
@@ -160,7 +187,7 @@ export default function Inventory({ onNavigate }) {
             <table className="table">
               <thead>
                 <tr>
-                  <th style={{ minWidth: 230 }}>Product Details</th>
+                  <th className="col-product">Product Details</th>
                   <th>Category</th>
                   <th>Type</th>
                   <th className="r">Stock on Hand</th>
@@ -176,8 +203,8 @@ export default function Inventory({ onNavigate }) {
                   return (
                     <tr key={p.id}>
                       <td>
-                        <div className="row" style={{ gap: 12 }}>
-                          <div style={{ width: 40, height: 40, borderRadius: 9, background: '#f1f4f8', border: '1px solid var(--border)', overflow: 'hidden', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+                        <div className="row" style={{ gap: 10 }}>
+                          <div className="thumb" style={{ width: 40, height: 40, borderRadius: 9, background: '#f1f4f8', border: '1px solid var(--border)', overflow: 'hidden', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
                             {p.has_image ? (
                               <img src={productImageUrl(p.id)} alt="" loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                             ) : (

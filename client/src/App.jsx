@@ -102,7 +102,6 @@ function MainLayout() {
                 key={item.id} 
                 href={`#${item.id}`}
                 className={active ? 'active' : ''}
-                title={item.label}
                 onClick={(e) => {
                   e.preventDefault();
                   setCurrentPage(item.id);
@@ -124,7 +123,6 @@ function MainLayout() {
                 key={item.id} 
                 href={`#${item.id}`}
                 className={active ? 'active' : ''}
-                title={item.label}
                 onClick={(e) => {
                   e.preventDefault();
                   setCurrentPage(item.id);
