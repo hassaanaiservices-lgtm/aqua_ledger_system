@@ -160,7 +160,7 @@ export default function Inventory({ onNavigate }) {
             <table className="table">
               <thead>
                 <tr>
-                  <th>Product Details</th>
+                  <th style={{ minWidth: 230 }}>Product Details</th>
                   <th>Category</th>
                   <th>Type</th>
                   <th className="r">Stock on Hand</th>

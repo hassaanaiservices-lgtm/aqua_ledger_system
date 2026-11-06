@@ -29,7 +29,8 @@ export const MONTHS_FULL = ['January', 'February', 'March', 'April', 'May', 'Jun
 export const fmtDate = (s) => {
   if (!s) return '';
   const [y, m, d] = String(s).slice(0, 10).split('-');
-  return `${d} ${MONTHS[+m - 1]} ${y}`;
+  // Non-breaking spaces keep a date on one line in narrow table columns.
+  return `${d}\u00a0${MONTHS[+m - 1]}\u00a0${y}`;
 };
 export const fmtDateLong = (s) => {
   if (!s) return '';

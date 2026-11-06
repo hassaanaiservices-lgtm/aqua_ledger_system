@@ -357,7 +357,8 @@ input.num { text-align: right; font-variant-numeric: tabular-nums; }
 }
 
 /* ---------------- Tables ---------------- */
-.table-wrap { overflow: auto; }
+/* Capped height keeps the sideways scrollbar on screen instead of at the far end of a long list. */
+.table-wrap { overflow: auto; max-height: calc(100vh - 110px); }
 table.table { width: 100%; border-collapse: collapse; font-size: 14px; line-height: 1.45; }
 .table th {
   text-align: left; font-weight: 700; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.05em;
@@ -378,6 +379,16 @@ table.table { width: 100%; border-collapse: collapse; font-size: 14px; line-heig
 .table .actions { text-align: right; white-space: nowrap; width: 1%; }
 .table .actions .btn + .btn { margin-left: 4px; }
 .table.compact td, .table.compact th { padding: 8px 12px; }
+.table .big { font-size: 16px; }
+@media (max-width: 1440px) {
+  table.table { font-size: 13px; }
+  .table th, .table td { padding: 10px 10px; }
+  .table th { font-size: 10.5px; letter-spacing: 0.03em; }
+  .table.compact td, .table.compact th { padding: 7px 8px; }
+  /* Row action buttons shrink to their icon; the title tooltip still names them. */
+  .table .actions .btn { font-size: 0; gap: 0; padding: 7px; }
+  .content { padding: 22px 18px 60px; }
+}
 .line-items td { padding: 6px 8px; }
 .line-items input, .line-items select { padding: 7px 10px; }
 
@@ -548,6 +559,16 @@ table.excel-table input { background: #ffffff; border: 1px solid #111114; box-sh
 @media (max-width: 1200px) {
   .grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .grid-dash { grid-template-columns: 1fr; }
+}
+/* Laptop-size screens: icon-only sidebar (labels show on hover) frees ~170px for tables. */
+@media (max-width: 1280px) and (min-width: 901px) {
+  :root { --sidebar-w: 76px; }
+  .sidebar { padding: 20px 10px; }
+  .brand { justify-content: center; padding: 6px 0 18px; }
+  .brand > div:last-child, .nav-section { display: none; }
+  .nav { gap: 6px; }
+  .nav a { justify-content: center; padding: 12px 0; }
+  .nav a span { display: none; }
 }
 @media (max-width: 900px) {
   .sidebar { transform: translateX(-100%); box-shadow: var(--shadow-lg); }
