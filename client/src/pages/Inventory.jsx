@@ -339,11 +339,9 @@ export default function Inventory({ onNavigate }) {
               <Field label="Reorder Level (Alert threshold)">
                 <input type="number" step="any" name="reorder_level" defaultValue={productModal.reorder_level || ''} placeholder="Alert when stock falls below" />
               </Field>
-              {!productModal.id && (
-                <Field label="Initial Opening Stock Qty">
-                  <input type="number" step="any" name="opening_stock" placeholder="0" />
-                </Field>
-              )}
+              <Field label={productModal.id ? 'Opening Stock Qty' : 'Initial Opening Stock Qty'} hint={productModal.id ? '0 removes it · valued at the cost above' : undefined}>
+                <input type="number" step="any" min="0" name="opening_stock" defaultValue={productModal.id ? productModal.opening_stock || 0 : ''} placeholder="0" />
+              </Field>
               {productModal.type === 'finished' && (
                 <>
                   <Field label="Estimated Labor Cost (Rs)">

@@ -489,6 +489,7 @@ export const PRODUCT_STOCK_SQL = `
     p.reorder_level, p.labor_cost, p.overhead_cost, p.active, p.created_at,
     (p.image IS NOT NULL AND p.image <> '') AS has_image,
     COALESCE((SELECT SUM(qty) FROM stock_movements m WHERE m.product_id = p.id),0) AS stock,
+    COALESCE((SELECT SUM(qty) FROM stock_movements m WHERE m.product_id = p.id AND m.ref_type = 'opening'),0) AS opening_stock,
     COALESCE((SELECT SUM(qty*unit_cost)/NULLIF(SUM(qty),0) FROM stock_movements m
               WHERE m.product_id = p.id AND qty > 0 AND unit_cost > 0), p.cost_price) AS avg_cost
   FROM products p`;

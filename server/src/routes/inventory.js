@@ -115,6 +115,22 @@ r.put(
   '/products/:id',
   h(async (req) => {
     if (!await get('SELECT id FROM products WHERE id = ?', req.params.id)) throw notFound();
+    const b = req.body;
+    // Opening stock is replaced as one entry; sales, purchases and adjustments are untouched.
+    if (b.opening_stock !== undefined && b.opening_stock !== '') {
+      const qty = num(b.opening_stock);
+      if (qty < 0) throw bad('Opening stock cannot be negative');
+      const first = await get("SELECT MIN(date) AS d FROM stock_movements WHERE product_id = ? AND ref_type = 'opening'", req.params.id);
+      await tx(async () => {
+        await run("DELETE FROM stock_movements WHERE product_id = ? AND ref_type = 'opening'", req.params.id);
+        if (qty > 0) {
+          await run(
+            `INSERT INTO stock_movements (product_id,date,qty,unit_cost,ref_type,note) VALUES (?,?,?,?, 'opening', 'Opening stock')`,
+            req.params.id, first?.d || today(), qty, num(b.cost_price)
+          );
+        }
+      });
+    }
     await run(
       `UPDATE products SET sku=?,name=?,type=?,category=?,unit=?,cost_price=?,sale_price=?,reorder_level=?,labor_cost=?,overhead_cost=?,
        active=? WHERE id=?`,
