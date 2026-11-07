@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { 
-  ShoppingCart, Plus, Search, Download, Eye, Trash2, 
+  ShoppingCart, Plus, Search, Download, Eye, Trash2, Pencil,
   UserPlus, Calendar, CreditCard, DollarSign, FileText, CheckCircle2, Undo2
 } from 'lucide-react';
 import { useApp, useFetch, PageHeader, Modal, Field, Loading, Empty, useSaver } from '../components/ui';
@@ -14,6 +14,8 @@ export default function Sales({ onNavigate }) {
   const [search, setSearch] = useState('');
   const [customerFilter, setCustomerFilter] = useState('');
   const [newSaleModal, setNewSaleModal] = useState(false);
+  const [editingSaleId, setEditingSaleId] = useState(null);
+  const [editingLabel, setEditingLabel] = useState('');
   const [activeInvoiceId, setActiveInvoiceId] = useState(null);
   const [returnModal, setReturnModal] = useState(false);
   const [runSave, saving] = useSaver();
@@ -55,6 +57,38 @@ export default function Sales({ onNavigate }) {
     setItems(next);
   };
 
+  const openEditSale = async (s) => {
+    try {
+      const full = await api.get(`/sales/${s.id}`);
+      setCustomerId(full.customer_id);
+      setDate(full.date);
+      setNote(full.note || '');
+      setDiscount(full.discount || 0);
+      setTax(full.tax || 0);
+      setItems(full.items.map((it) => ({
+        product_id: it.product_id,
+        qty: it.qty,
+        unit_price: it.unit_price,
+        line_total: it.line_total,
+        available: 0,
+      })));
+      full.items.forEach((it, idx) => {
+        api.get(`/products/${it.product_id}`).then((p) => {
+          setItems((cur) => {
+            const updated = [...cur];
+            if (updated[idx]) updated[idx].available = p.stock + it.qty;
+            return updated;
+          });
+        }).catch(() => {});
+      });
+      setEditingSaleId(s.id);
+      setEditingLabel(s.invoice_no);
+      setNewSaleModal(true);
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  };
+
   const handleQtyChange = (idx, qty) => {
     const next = [...items];
     next[idx].qty = Number(qty) || 0;
@@ -81,7 +115,7 @@ export default function Sales({ onNavigate }) {
   const subtotal = items.reduce((sum, it) => sum + (it.line_total || 0), 0);
   const grandTotal = Math.max(0, subtotal - (Number(discount) || 0) + (Number(tax) || 0));
 
-  const handleCreateSale = async (e) => {
+  const handleSaveSale = async (e) => {
     e.preventDefault();
     if (!customerId) {
       toast('Please select a customer', 'error');
@@ -94,6 +128,28 @@ export default function Sales({ onNavigate }) {
     }
 
     await runSave(async () => {
+      if (editingSaleId) {
+        const res = await api.patch(`/sales/${editingSaleId}`, {
+          customer_id: customerId,
+          date,
+          items: cleanItems.map((it) => ({
+            product_id: it.product_id,
+            qty: it.qty,
+            unit_price: it.unit_price,
+          })),
+          discount: Number(discount) || 0,
+          tax: Number(tax) || 0,
+          note,
+        });
+        toast(`Invoice ${res.invoice_no} updated — stock and ledger refreshed`);
+        setNewSaleModal(false);
+        setEditingSaleId(null);
+        reload();
+        loadLookups();
+        setActiveInvoiceId(editingSaleId);
+        return;
+      }
+
       const res = await api.post('/sales', {
         customer_id: customerId,
         date,
@@ -153,9 +209,13 @@ export default function Sales({ onNavigate }) {
           onClick={() => {
             setItems([{ product_id: '', qty: 1, unit_price: 0, line_total: 0, available: 0 }]);
             setCustomerId('');
+            setDate(new Date().toISOString().slice(0, 10));
+            setNote('');
             setDiscount(0);
             setTax(0);
             setPaidAmount(0);
+            setEditingSaleId(null);
+            setEditingLabel('');
             setNewSaleModal(true);
           }}
         >
@@ -249,6 +309,15 @@ export default function Sales({ onNavigate }) {
                     </td>
                     <td className="r pos">{money(s.paid_on_invoice)}</td>
                     <td className="actions">
+                      {!s.is_return && (
+                        <button 
+                          className="btn btn-sm btn-ghost btn-icon" 
+                          title="Edit Invoice" 
+                          onClick={() => openEditSale(s)}
+                        >
+                          <Pencil size={15} />
+                        </button>
+                      )}
                       <button 
                         className="btn btn-sm btn-primary" 
                         title="Download / View Official Invoice PDF" 
@@ -275,11 +344,11 @@ export default function Sales({ onNavigate }) {
       {/* Create Sale Invoice Modal */}
       {newSaleModal && (
         <Modal
-          title="Create New Sales Invoice"
-          onClose={() => setNewSaleModal(false)}
+          title={editingSaleId ? `Edit Sales Invoice: ${editingLabel}` : 'Create New Sales Invoice'}
+          onClose={() => { setNewSaleModal(false); setEditingSaleId(null); }}
           size="xl"
         >
-          <form onSubmit={handleCreateSale}>
+          <form onSubmit={handleSaveSale}>
             {/* Header info */}
             <div className="form-grid mb">
               <Field label="Customer Account *" className="full">
@@ -382,31 +451,41 @@ export default function Sales({ onNavigate }) {
             </div>
 
             {/* Calculations & Upfront payment */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 20 }}>
-              <div className="card-pad" style={{ background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
-                <h4 style={{ margin: '0 0 10px 0', fontSize: '14px' }}>Instant Upfront Payment (Optional)</h4>
-                <div className="form-grid">
-                  <Field label="Amount Paid at Checkout (Rs)">
-                    <input 
-                      type="number" 
-                      step="any" 
-                      value={paidAmount} 
-                      onChange={(e) => setPaidAmount(e.target.value)} 
-                      placeholder="0 if on credit / due" 
-                    />
-                  </Field>
-                  <Field label="Payment Method">
-                    <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}>
-                      {paymentOptions(lookups.bank_accounts).map((o) => (
-                        <option key={o.value} value={o.value}>{o.label}</option>
-                      ))}
-                    </select>
-                  </Field>
-                  <Field label="Payment Reference #" className="full">
-                    <input value={paymentRef} onChange={(e) => setPaymentRef(e.target.value)} placeholder="Receipt / Cheque #" />
-                  </Field>
+            <div style={{ display: 'grid', gridTemplateColumns: editingSaleId ? '1fr' : '1.2fr 1fr', gap: 20 }}>
+              {editingSaleId ? (
+                <div className="card-pad" style={{ background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
+                  <p className="muted small" style={{ margin: 0, lineHeight: 1.5 }}>
+                    Saving will update stock and the customer's ledger balance to match these items.
+                    Payments already recorded against this invoice are not changed here — use the
+                    customer ledger to add or edit a payment.
+                  </p>
                 </div>
-              </div>
+              ) : (
+                <div className="card-pad" style={{ background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
+                  <h4 style={{ margin: '0 0 10px 0', fontSize: '14px' }}>Instant Upfront Payment (Optional)</h4>
+                  <div className="form-grid">
+                    <Field label="Amount Paid at Checkout (Rs)">
+                      <input 
+                        type="number" 
+                        step="any" 
+                        value={paidAmount} 
+                        onChange={(e) => setPaidAmount(e.target.value)} 
+                        placeholder="0 if on credit / due" 
+                      />
+                    </Field>
+                    <Field label="Payment Method">
+                      <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}>
+                        {paymentOptions(lookups.bank_accounts).map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                    </Field>
+                    <Field label="Payment Reference #" className="full">
+                      <input value={paymentRef} onChange={(e) => setPaymentRef(e.target.value)} placeholder="Receipt / Cheque #" />
+                    </Field>
+                  </div>
+                </div>
+              )}
 
               <div className="summary-box">
                 <div className="summary-line">
@@ -437,21 +516,25 @@ export default function Sales({ onNavigate }) {
                   <span>Invoice Total:</span>
                   <b>{money(grandTotal)}</b>
                 </div>
-                <div className="summary-line" style={{ color: 'var(--green)' }}>
-                  <span>Upfront Paid:</span>
-                  <b>{money(paidAmount)}</b>
-                </div>
-                <div className="summary-line" style={{ fontSize: '15px', color: grandTotal - paidAmount > 0 ? 'var(--rose)' : 'var(--green)' }}>
-                  <span>Remaining Due on Ledger:</span>
-                  <b>{money(grandTotal - paidAmount)}</b>
-                </div>
+                {!editingSaleId && (
+                  <>
+                    <div className="summary-line" style={{ color: 'var(--green)' }}>
+                      <span>Upfront Paid:</span>
+                      <b>{money(paidAmount)}</b>
+                    </div>
+                    <div className="summary-line" style={{ fontSize: '15px', color: grandTotal - paidAmount > 0 ? 'var(--rose)' : 'var(--green)' }}>
+                      <span>Remaining Due on Ledger:</span>
+                      <b>{money(grandTotal - paidAmount)}</b>
+                    </div>
+                  </>
+                )}
               </div>
             </div>
 
             <div className="modal-foot" style={{ marginTop: 24, padding: '14px 0 0' }}>
-              <button type="button" className="btn" onClick={() => setNewSaleModal(false)}>Cancel</button>
+              <button type="button" className="btn" onClick={() => { setNewSaleModal(false); setEditingSaleId(null); }}>Cancel</button>
               <button type="submit" className="btn btn-primary" disabled={saving}>
-                {saving ? 'Creating Invoice...' : 'Generate & Save Invoice'}
+                {saving ? 'Saving...' : editingSaleId ? 'Save Changes' : 'Generate & Save Invoice'}
               </button>
             </div>
           </form>

@@ -174,6 +174,65 @@ r.patch(
     const s = await get('SELECT * FROM sales WHERE id = ?', req.params.id);
     if (!s) throw notFound();
     const b = req.body;
+
+    // Full edit: replaces the line items, so stock and the customer ledger
+    // move to match. Sent only from the Sales page's Edit button.
+    if (Array.isArray(b.items)) {
+      if (s.total < 0) throw bad('A return cannot be edited this way. Delete it and record a new return instead.');
+      const customerId = b.customer_id !== undefined ? num(b.customer_id) : s.customer_id;
+      if (!await get('SELECT id FROM customers WHERE id = ?', customerId)) throw bad('Select a customer');
+      const items = await cleanItems(b.items, 'unit_price');
+      const date = b.date !== undefined ? (str(b.date) || s.date) : s.date;
+      const subtotal = r2(items.reduce((a, i) => a + i.line, 0));
+      const discount = b.discount !== undefined ? r2(b.discount) : s.discount;
+      const tax = b.tax !== undefined ? r2(b.tax) : s.tax;
+      const total = r2(subtotal - discount + tax);
+      if (total < 0) throw bad('Total cannot be negative');
+      const note = b.note !== undefined ? str(b.note) : s.note;
+
+      // Only the net change in each product's quantity needs stock: items kept
+      // at the same quantity, or reduced, never need a fresh availability check.
+      const oldQty = {};
+      for (const row of await all('SELECT product_id, SUM(qty) q FROM sale_items WHERE sale_id = ? GROUP BY product_id', s.id))
+        oldQty[row.product_id] = row.q;
+      const newQty = {};
+      for (const it of items) newQty[it.product.id] = (newQty[it.product.id] || 0) + it.qty;
+      for (const pid of new Set([...Object.keys(oldQty), ...Object.keys(newQty)].map(Number))) {
+        const delta = (newQty[pid] || 0) - (oldQty[pid] || 0);
+        if (delta > 0) {
+          const have = await stockOf(pid);
+          if (have + 1e-9 < delta) {
+            const prod = await get('SELECT name, unit FROM products WHERE id = ?', pid);
+            throw bad(`Not enough stock for "${prod.name}". Available: ${r2(have)} ${prod.unit}, need ${r2(delta)} more`);
+          }
+        }
+      }
+
+      return await tx(async () => {
+        await run(`DELETE FROM stock_movements WHERE ref_type = 'sale' AND ref_id = ?`, s.id);
+        await run('DELETE FROM sale_items WHERE sale_id = ?', s.id);
+        let costTotal = 0;
+        for (const it of items) {
+          const unitCost = await avgCostOf(it.product.id);
+          costTotal += unitCost * it.qty;
+          await run(
+            `INSERT INTO sale_items (sale_id,product_id,qty,unit_price,unit_cost,line_total) VALUES (?,?,?,?,?,?)`,
+            s.id, it.product.id, it.qty, it.price, unitCost, it.line
+          );
+          await run(
+            `INSERT INTO stock_movements (product_id,date,qty,unit_cost,ref_type,ref_id,note) VALUES (?,?,?,?, 'sale', ?, ?)`,
+            it.product.id, date, -it.qty, unitCost, s.id, `Sold on ${docNo.sale(s.id)}`
+          );
+        }
+        await run(
+          'UPDATE sales SET customer_id=?, date=?, subtotal=?, discount=?, tax=?, total=?, cost_total=?, note=? WHERE id=?',
+          customerId, date, subtotal, discount, tax, total, r2(costTotal), note, s.id
+        );
+        await run('UPDATE payments SET date = ? WHERE sale_id = ?', date, s.id);
+        return { ok: true, id: s.id, invoice_no: docNo.sale(s.id) };
+      });
+    }
+
     const date = b.date !== undefined ? (str(b.date) || s.date) : s.date;
     const note = b.note !== undefined ? str(b.note) : s.note;
     return await tx(async () => {
@@ -330,6 +389,64 @@ r.patch(
     const p = await get('SELECT * FROM purchases WHERE id = ?', req.params.id);
     if (!p) throw notFound();
     const b = req.body;
+
+    // Full edit: replaces the line items, so stock and the vendor ledger move
+    // to match. Sent only from the Purchases page's Edit button.
+    if (Array.isArray(b.items)) {
+      if (p.total < 0) throw bad('A return cannot be edited this way. Delete it and record a new return instead.');
+      const vendorId = b.vendor_id !== undefined ? num(b.vendor_id) : p.vendor_id;
+      if (!await get('SELECT id FROM vendors WHERE id = ?', vendorId)) throw bad('Select a vendor');
+      const items = await cleanItems(b.items, 'unit_cost');
+      const date = b.date !== undefined ? (str(b.date) || p.date) : p.date;
+      const billNo = b.vendor_bill_no !== undefined ? str(b.vendor_bill_no) : p.vendor_bill_no;
+      const subtotal = r2(items.reduce((a, i) => a + i.line, 0));
+      const discount = b.discount !== undefined ? r2(b.discount) : p.discount;
+      const tax = b.tax !== undefined ? r2(b.tax) : p.tax;
+      const total = r2(subtotal - discount + tax);
+      if (total < 0) throw bad('Total cannot be negative');
+      const note = b.note !== undefined ? str(b.note) : p.note;
+      const factor = subtotal > 0 ? total / subtotal : 1;
+
+      // A reduced or dropped item needs the stock it brought in to still be
+      // there; an item kept the same or increased never needs this check.
+      const oldQty = {};
+      for (const row of await all('SELECT product_id, SUM(qty) q FROM purchase_items WHERE purchase_id = ? GROUP BY product_id', p.id))
+        oldQty[row.product_id] = row.q;
+      const newQty = {};
+      for (const it of items) newQty[it.product.id] = (newQty[it.product.id] || 0) + it.qty;
+      for (const pid of new Set([...Object.keys(oldQty), ...Object.keys(newQty)].map(Number))) {
+        const reduced = (oldQty[pid] || 0) - (newQty[pid] || 0);
+        if (reduced > 0) {
+          const have = await stockOf(pid);
+          if (have + 1e-9 < reduced) {
+            const prod = await get('SELECT name, unit FROM products WHERE id = ?', pid);
+            throw bad(`Cannot reduce "${prod.name}" on this bill: ${r2(reduced)} ${prod.unit} of it has already been used or sold.`);
+          }
+        }
+      }
+
+      return await tx(async () => {
+        await run(`DELETE FROM stock_movements WHERE ref_type = 'purchase' AND ref_id = ?`, p.id);
+        await run('DELETE FROM purchase_items WHERE purchase_id = ?', p.id);
+        for (const it of items) {
+          await run(
+            `INSERT INTO purchase_items (purchase_id,product_id,qty,unit_cost,line_total) VALUES (?,?,?,?,?)`,
+            p.id, it.product.id, it.qty, it.price, it.line
+          );
+          await run(
+            `INSERT INTO stock_movements (product_id,date,qty,unit_cost,ref_type,ref_id,note) VALUES (?,?,?,?, 'purchase', ?, ?)`,
+            it.product.id, date, it.qty, r2(it.price * factor), p.id, `Purchased on ${docNo.purchase(p.id)}`
+          );
+        }
+        await run(
+          'UPDATE purchases SET vendor_id=?, date=?, vendor_bill_no=?, subtotal=?, discount=?, tax=?, total=?, note=? WHERE id=?',
+          vendorId, date, billNo, subtotal, discount, tax, total, note, p.id
+        );
+        await run('UPDATE payments SET date = ? WHERE purchase_id = ?', date, p.id);
+        return { ok: true, id: p.id, purchase_no: docNo.purchase(p.id) };
+      });
+    }
+
     const date = b.date !== undefined ? (str(b.date) || p.date) : p.date;
     const billNo = b.vendor_bill_no !== undefined ? str(b.vendor_bill_no) : p.vendor_bill_no;
     const note = b.note !== undefined ? str(b.note) : p.note;

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { 
-  Truck, Plus, Search, Download, Trash2, Calendar, FileText, Undo2,
+  Truck, Plus, Search, Download, Trash2, Pencil, Calendar, FileText, Undo2,
 } from 'lucide-react';
 import { useApp, useFetch, PageHeader, Modal, Field, Loading, Empty, useSaver } from '../components/ui';
 import { money, fmtDate, paymentOptions, parsePaymentChoice } from '../lib/format';
@@ -13,6 +13,8 @@ export default function Purchases({ onNavigate }) {
   const [search, setSearch] = useState('');
   const [vendorFilter, setVendorFilter] = useState('');
   const [newPurchaseModal, setNewPurchaseModal] = useState(false);
+  const [editingPurchaseId, setEditingPurchaseId] = useState(null);
+  const [editingLabel, setEditingLabel] = useState('');
   const [activeBillId, setActiveBillId] = useState(null);
   const [returnModal, setReturnModal] = useState(false);
   const [runSave, saving] = useSaver();
@@ -45,6 +47,29 @@ export default function Purchases({ onNavigate }) {
     setItems(next);
   };
 
+  const openEditPurchase = async (p) => {
+    try {
+      const full = await api.get(`/purchases/${p.id}`);
+      setVendorId(full.vendor_id);
+      setDate(full.date);
+      setVendorBillNo(full.vendor_bill_no || '');
+      setNote(full.note || '');
+      setDiscount(full.discount || 0);
+      setTax(full.tax || 0);
+      setItems(full.items.map((it) => ({
+        product_id: it.product_id,
+        qty: it.qty,
+        unit_cost: it.unit_cost,
+        line_total: it.line_total,
+      })));
+      setEditingPurchaseId(p.id);
+      setEditingLabel(p.purchase_no);
+      setNewPurchaseModal(true);
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  };
+
   const handleQtyChange = (idx, qty) => {
     const next = [...items];
     next[idx].qty = Number(qty) || 0;
@@ -71,7 +96,7 @@ export default function Purchases({ onNavigate }) {
   const subtotal = items.reduce((sum, it) => sum + (it.line_total || 0), 0);
   const grandTotal = Math.max(0, subtotal - (Number(discount) || 0) + (Number(tax) || 0));
 
-  const handleCreatePurchase = async (e) => {
+  const handleSavePurchase = async (e) => {
     e.preventDefault();
     if (!vendorId) {
       toast('Please select a vendor', 'error');
@@ -84,6 +109,29 @@ export default function Purchases({ onNavigate }) {
     }
 
     await runSave(async () => {
+      if (editingPurchaseId) {
+        const res = await api.patch(`/purchases/${editingPurchaseId}`, {
+          vendor_id: vendorId,
+          date,
+          vendor_bill_no: vendorBillNo,
+          items: cleanItems.map((it) => ({
+            product_id: it.product_id,
+            qty: it.qty,
+            unit_cost: it.unit_cost,
+          })),
+          discount: Number(discount) || 0,
+          tax: Number(tax) || 0,
+          note,
+        });
+        toast(`Purchase ${res.purchase_no} updated — stock and ledger refreshed`);
+        setNewPurchaseModal(false);
+        setEditingPurchaseId(null);
+        reload();
+        loadLookups();
+        setActiveBillId(editingPurchaseId);
+        return;
+      }
+
       const res = await api.post('/purchases', {
         vendor_id: vendorId,
         date,
@@ -142,10 +190,14 @@ export default function Purchases({ onNavigate }) {
           onClick={() => {
             setItems([{ product_id: '', qty: 1, unit_cost: 0, line_total: 0 }]);
             setVendorId('');
+            setDate(new Date().toISOString().slice(0, 10));
             setVendorBillNo('');
+            setNote('');
             setDiscount(0);
             setTax(0);
             setPaidAmount(0);
+            setEditingPurchaseId(null);
+            setEditingLabel('');
             setNewPurchaseModal(true);
           }}
         >
@@ -238,6 +290,15 @@ export default function Purchases({ onNavigate }) {
                     <td className="r strong big">{money(p.total)}</td>
                     <td className="r pos">{money(p.paid_on_bill)}</td>
                     <td className="actions">
+                      {!p.is_return && (
+                        <button 
+                          className="btn btn-sm btn-ghost btn-icon" 
+                          title="Edit Purchase" 
+                          onClick={() => openEditPurchase(p)}
+                        >
+                          <Pencil size={15} />
+                        </button>
+                      )}
                       <button 
                         className="btn btn-sm btn-primary" 
                         title="Download / View Purchase Bill PDF" 
@@ -264,11 +325,11 @@ export default function Purchases({ onNavigate }) {
       {/* Record Purchase Modal */}
       {newPurchaseModal && (
         <Modal
-          title="Record Inventory Purchase Bill"
-          onClose={() => setNewPurchaseModal(false)}
+          title={editingPurchaseId ? `Edit Purchase Bill: ${editingLabel}` : 'Record Inventory Purchase Bill'}
+          onClose={() => { setNewPurchaseModal(false); setEditingPurchaseId(null); }}
           size="xl"
         >
-          <form onSubmit={handleCreatePurchase}>
+          <form onSubmit={handleSavePurchase}>
             <div className="form-grid mb">
               <Field label="Vendor / Supplier Account *" className="full">
                 <select value={vendorId} onChange={(e) => setVendorId(e.target.value)} required>
@@ -367,31 +428,41 @@ export default function Purchases({ onNavigate }) {
             </div>
 
             {/* Calculations & Payment made */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 20 }}>
-              <div className="card-pad" style={{ background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
-                <h4 style={{ margin: '0 0 10px 0', fontSize: '14px' }}>Payment Made at Receipt (Optional)</h4>
-                <div className="form-grid">
-                  <Field label="Amount Paid to Vendor (Rs)">
-                    <input 
-                      type="number" 
-                      step="any" 
-                      value={paidAmount} 
-                      onChange={(e) => setPaidAmount(e.target.value)} 
-                      placeholder="0 if bought on credit" 
-                    />
-                  </Field>
-                  <Field label="Payment Method">
-                    <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}>
-                      {paymentOptions(lookups.bank_accounts).map((o) => (
-                        <option key={o.value} value={o.value}>{o.label}</option>
-                      ))}
-                    </select>
-                  </Field>
-                  <Field label="Payment Reference #" className="full">
-                    <input value={paymentRef} onChange={(e) => setPaymentRef(e.target.value)} placeholder="Cheque # or bank slip #" />
-                  </Field>
+            <div style={{ display: 'grid', gridTemplateColumns: editingPurchaseId ? '1fr' : '1.2fr 1fr', gap: 20 }}>
+              {editingPurchaseId ? (
+                <div className="card-pad" style={{ background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
+                  <p className="muted small" style={{ margin: 0, lineHeight: 1.5 }}>
+                    Saving will update stock and the vendor's ledger balance to match these items.
+                    Payments already recorded against this bill are not changed here — use the
+                    vendor ledger to add or edit a payment.
+                  </p>
                 </div>
-              </div>
+              ) : (
+                <div className="card-pad" style={{ background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
+                  <h4 style={{ margin: '0 0 10px 0', fontSize: '14px' }}>Payment Made at Receipt (Optional)</h4>
+                  <div className="form-grid">
+                    <Field label="Amount Paid to Vendor (Rs)">
+                      <input 
+                        type="number" 
+                        step="any" 
+                        value={paidAmount} 
+                        onChange={(e) => setPaidAmount(e.target.value)} 
+                        placeholder="0 if bought on credit" 
+                      />
+                    </Field>
+                    <Field label="Payment Method">
+                      <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}>
+                        {paymentOptions(lookups.bank_accounts).map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                    </Field>
+                    <Field label="Payment Reference #" className="full">
+                      <input value={paymentRef} onChange={(e) => setPaymentRef(e.target.value)} placeholder="Cheque # or bank slip #" />
+                    </Field>
+                  </div>
+                </div>
+              )}
 
               <div className="summary-box">
                 <div className="summary-line">
@@ -422,21 +493,25 @@ export default function Purchases({ onNavigate }) {
                   <span>Purchase Total:</span>
                   <b>{money(grandTotal)}</b>
                 </div>
-                <div className="summary-line" style={{ color: 'var(--green)' }}>
-                  <span>Paid Upfront:</span>
-                  <b>{money(paidAmount)}</b>
-                </div>
-                <div className="summary-line" style={{ fontSize: '15px', color: grandTotal - paidAmount > 0 ? 'var(--rose)' : 'var(--green)' }}>
-                  <span>We Owe (Added to Vendor Ledger):</span>
-                  <b>{money(grandTotal - paidAmount)}</b>
-                </div>
+                {!editingPurchaseId && (
+                  <>
+                    <div className="summary-line" style={{ color: 'var(--green)' }}>
+                      <span>Paid Upfront:</span>
+                      <b>{money(paidAmount)}</b>
+                    </div>
+                    <div className="summary-line" style={{ fontSize: '15px', color: grandTotal - paidAmount > 0 ? 'var(--rose)' : 'var(--green)' }}>
+                      <span>We Owe (Added to Vendor Ledger):</span>
+                      <b>{money(grandTotal - paidAmount)}</b>
+                    </div>
+                  </>
+                )}
               </div>
             </div>
 
             <div className="modal-foot" style={{ marginTop: 24, padding: '14px 0 0' }}>
-              <button type="button" className="btn" onClick={() => setNewPurchaseModal(false)}>Cancel</button>
+              <button type="button" className="btn" onClick={() => { setNewPurchaseModal(false); setEditingPurchaseId(null); }}>Cancel</button>
               <button type="submit" className="btn btn-primary" disabled={saving}>
-                {saving ? 'Recording...' : 'Save & Receive Stock'}
+                {saving ? 'Saving...' : editingPurchaseId ? 'Save Changes' : 'Save & Receive Stock'}
               </button>
             </div>
           </form>
