@@ -334,6 +334,7 @@ async function moneyRows(to) {
       party: p.party,
       detail: [p.sale_id && `Against ${docNo.sale(p.sale_id)}`, p.purchase_id && `Against ${docNo.purchase(p.purchase_id)}`, p.reference && `Ref ${p.reference}`, p.note].filter(Boolean).join(' · '),
       method: methodLabel(p.method),
+      method_value: String(p.method || 'cash').toLowerCase(),
       in: isIn ? p.amount : 0, out: isIn ? 0 : p.amount,
     });
   }
@@ -342,7 +343,7 @@ async function moneyRows(to) {
     add({
       account: accountOfMethod(e.method) === 'cash' ? 'cash' : bankKey(e.bank_account_id),
       date: e.date, created_at: e.created_at, id: e.id, ref: docNo.expense(e.id), kind: 'expense', type: 'Expense',
-      party: e.category, detail: e.note || '', method: methodLabel(e.method), in: 0, out: e.amount,
+      party: e.category, detail: e.note || '', method: methodLabel(e.method), method_value: String(e.method || 'cash').toLowerCase(), in: 0, out: e.amount,
     });
   }
 
@@ -675,9 +676,12 @@ const REPORTS = {
       };
     }
 
-    const acct = accounts.find((a) => a.key === q.account);
+    // "method:online" etc. follows one payment method across every bank account;
+    // it starts from zero because a method, unlike an account, holds no balance.
+    const method = String(q.account).startsWith('method:') ? PAYMENT_METHODS.find((x) => `method:${x.value}` === q.account) : null;
+    const acct = method ? { key: q.account, name: method.label, opening: 0 } : accounts.find((a) => a.key === q.account);
     if (!acct) throw bad('Unknown payment method or bank account');
-    const mine = rowsAll.filter((x) => x.account === acct.key);
+    const mine = method ? rowsAll.filter((x) => x.method_value === method.value) : rowsAll.filter((x) => x.account === acct.key);
     const opening = r2(acct.opening + net(mine.filter((x) => !period(x))));
     const needle = q.q ? String(q.q).toLowerCase() : '';
     let bal = opening;

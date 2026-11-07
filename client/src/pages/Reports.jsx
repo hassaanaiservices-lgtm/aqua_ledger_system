@@ -4,7 +4,7 @@ import {
   Search, Filter, Calendar, Printer, RefreshCw 
 } from 'lucide-react';
 import { useFetch, PageHeader, Loading, Empty, Field } from '../components/ui';
-import { fmtDate } from '../lib/format';
+import { fmtDate, PAYMENT_METHODS } from '../lib/format';
 import { ReportTable, ReportExportButtons, RangeFilter } from '../components/ReportView';
 
 const REPORT_TYPES = [
@@ -83,10 +83,17 @@ export default function Reports({ onNavigate }) {
             <Field label="Payment Method / Account">
               <select value={account} onChange={(e) => setAccount(e.target.value)}>
                 <option value="all">All methods (summary)</option>
-                <option value="cash">Cash in Hand</option>
-                {(bankData?.accounts ?? []).map((a) => (
-                  <option key={a.id} value={`bank:${a.id}`}>{a.owner_name ? `${a.name} (${a.owner_name})` : a.name}</option>
-                ))}
+                <optgroup label="Cash & bank accounts">
+                  <option value="cash">Cash in Hand</option>
+                  {(bankData?.accounts ?? []).map((a) => (
+                    <option key={a.id} value={`bank:${a.id}`}>{a.owner_name ? `${a.name} (${a.owner_name})` : a.name}</option>
+                  ))}
+                </optgroup>
+                <optgroup label="Payment methods (all banks)">
+                  {PAYMENT_METHODS.filter((m) => m.value !== 'cash').map((m) => (
+                    <option key={m.value} value={`method:${m.value}`}>{m.label}</option>
+                  ))}
+                </optgroup>
               </select>
             </Field>
           )}
