@@ -31,6 +31,20 @@ export async function cashBookFlows(op, date) {
     date
   );
 }
+/** Cash/bank in & out from the cash book, for dates from `from` to `to` inclusive. */
+export async function cashBookFlowsRange(from, to) {
+  return await get(
+    `SELECT
+       COALESCE(SUM(CASE WHEN to_account   = 'cash' THEN amount ELSE 0 END),0) AS cash_in,
+       COALESCE(SUM(CASE WHEN from_account = 'cash' THEN amount ELSE 0 END),0) AS cash_out,
+       COALESCE(SUM(CASE WHEN to_account   = 'bank' THEN amount ELSE 0 END),0) AS bank_in,
+       COALESCE(SUM(CASE WHEN from_account = 'bank' THEN amount ELSE 0 END),0) AS bank_out
+     FROM cash_book WHERE date BETWEEN ? AND ?`,
+    from,
+    to
+  );
+}
+
 /** Totals per kind up to / on a date, used by the P&L and balance sheet. */
 export async function cashBookKindTotals(op, date) {
   if (!DATE_OPS.includes(op)) throw new Error(`Unsupported date comparison: ${op}`);
@@ -80,15 +94,32 @@ async function bankFlows(op, date) {
   );
 }
 
+/** Same as bankFlows, but summed over a date range instead of against one op/date. */
+async function bankFlowsRange(from, to) {
+  return await all(
+    `SELECT a.id,
+       COALESCE((SELECT SUM(amount) FROM payments p
+                 WHERE p.bank_account_id = a.id AND p.party_type = 'customer' AND p.date BETWEEN ? AND ?),0)
+       + COALESCE((SELECT SUM(amount) FROM cash_book c WHERE c.to_bank_id = a.id AND c.date BETWEEN ? AND ?),0) AS inflow,
+       COALESCE((SELECT SUM(amount) FROM payments p
+                 WHERE p.bank_account_id = a.id AND p.party_type = 'vendor' AND p.date BETWEEN ? AND ?),0)
+       + COALESCE((SELECT SUM(amount) FROM expenses e WHERE e.bank_account_id = a.id AND e.date BETWEEN ? AND ?),0)
+       + COALESCE((SELECT SUM(amount) FROM cash_book c WHERE c.from_bank_id = a.id AND c.date BETWEEN ? AND ?),0) AS outflow
+     FROM bank_accounts a ORDER BY a.sort, a.id`,
+    from, to, from, to, from, to, from, to, from, to
+  );
+}
+
 /**
- * Per-account bank books for a day, plus the combined position. This is the
- * single source of truth for the bank side, so the combined total can never
- * disagree with the sum of the individual accounts.
+ * Per-account bank books for the window from `from` to `to` (both default to
+ * the same day), plus the combined position. This is the single source of
+ * truth for the bank side, so the combined total can never disagree with the
+ * sum of the individual accounts.
  */
-export async function bankBooks(date) {
+export async function bankBooks(to, from = to) {
   const accounts = await all('SELECT * FROM bank_accounts ORDER BY sort, id');
-  const before = new Map((await bankFlows('<', date)).map((x) => [x.id, x]));
-  const onDay = new Map((await bankFlows('=', date)).map((x) => [x.id, x]));
+  const before = new Map((await bankFlows('<', from)).map((x) => [x.id, x]));
+  const onDay = new Map((await bankFlowsRange(from, to)).map((x) => [x.id, x]));
 
   const rows = accounts.map((a) => {
     const b = before.get(a.id) || { inflow: 0, outflow: 0 };

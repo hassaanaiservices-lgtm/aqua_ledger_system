@@ -8,7 +8,7 @@ import { PageHeader, StatCard, Modal, Field, Empty, Loading, Seg, useFetch, useS
 import { MoneyFlowCard, MoneyPositionCard, ExpenseGroupsCard } from '../components/BusinessCharts';
 import { ReportTable, ReportExportButtons, RangeFilter } from '../components/ReportView';
 import { api } from '../lib/api';
-import { money, fmtDateLong, today, addDays, paymentOptions, parsePaymentChoice, rangePresets } from '../lib/format';
+import { money, fmtDate, fmtDateLong, today, addDays, paymentOptions, parsePaymentChoice, rangePresets } from '../lib/format';
 
 const TABS = [
   { id: 'daybook', label: 'Day Book (Roznamcha)', icon: BookOpen },
@@ -20,6 +20,9 @@ const TABS = [
   { id: 'parties', label: 'Customers & Vendors', icon: Users },
   { id: 'notes', label: 'Notes & Tasks', icon: StickyNote },
 ];
+
+/** A single day reads as that day; a real range reads as "from – to". */
+const periodLabel = (d) => (d.from === d.to ? fmtDateLong(d.to) : `${fmtDate(d.from)} – ${fmtDate(d.to)}`);
 
 /** Two-column Dr/Cr statement used by the trading account and balance sheet. */
 function Ledger({ title, left, right, foot }) {
@@ -439,12 +442,12 @@ function BankAccountsModal({ accounts, onClose }) {
 // ---------------------------------------------------------------- page
 export default function DayDiary() {
   const { confirm } = useApp();
-  const [date, setDate] = useState(today());
+  const [range, setRange] = useState(() => ({ from: today(), to: today() }));
   const [tab, setTab] = useState('daybook');
   const [modal, setModal] = useState(null);
   const [save] = useSaver();
 
-  const { data: d, loading } = useFetch('/day-diary', { date });
+  const { data: d, loading } = useFetch('/day-diary', range);
   const { data: categories } = useFetch('/expense-categories');
   const { data: kinds } = useFetch('/cash-book/kinds');
   const { data: bankData } = useFetch('/bank-accounts');
@@ -456,32 +459,35 @@ export default function DayDiary() {
 
   const k = d.kpis;
   const rz = d.roznamcha;
+  const isSingleDay = d.from === d.to;
+
+  // Prev/Next re-run the same number of days immediately before/after the
+  // current window, so a 7-day range steps a week at a time, not one day.
+  const shiftWindow = (dir) => setRange(dir < 0 ? d.prev : d.next);
 
   return (
     <>
-      <PageHeader title="Day Diary" subtitle={`${fmtDateLong(d.date)} — cash book, trading account and balance sheet for the day`}>
+      <PageHeader title="Day Diary" subtitle={`${periodLabel(d)} — cash book, trading account and balance sheet for ${isSingleDay ? 'the day' : 'the period'}`}>
         <button className="btn" onClick={() => setModal('expense')}><Receipt size={16} /> Expense</button>
         <button className="btn" onClick={() => setModal('cashbook')}><ArrowRightLeft size={16} /> Cash / Bank</button>
       </PageHeader>
 
-      {/* date navigation */}
+      {/* date range navigation — everything below syncs to this From/To */}
       <div className="card" style={{ marginBottom: 16 }}>
         <div className="filters" style={{ borderBottom: 0 }}>
-          <button className="btn btn-icon" title="Previous day" onClick={() => setDate(d.prev_date)}><ChevronLeft size={18} /></button>
-          <Field label="Diary Date">
-            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-          </Field>
-          <button className="btn btn-icon" title="Next day" onClick={() => setDate(d.next_date)}><ChevronRight size={18} /></button>
-          <button className="btn" onClick={() => setDate(today())}><CalendarDays size={16} /> Today</button>
+          <button className="btn btn-icon" title="Previous period" onClick={() => shiftWindow(-1)}><ChevronLeft size={18} /></button>
+          <RangeFilter from={range.from} to={range.to} onChange={setRange} />
+          <button className="btn btn-icon" title="Next period" onClick={() => shiftWindow(1)}><ChevronRight size={18} /></button>
+          <button className="btn" onClick={() => setRange({ from: today(), to: today() })}><CalendarDays size={16} /> Today</button>
         </div>
       </div>
 
       <div className="grid grid-4" style={{ marginBottom: 16 }}>
         <StatCard label="Cash in Hand (closing)" value={money(rz.cash.closing)} icon={Wallet} accent="green" foot={`Opened at ${money(rz.cash.opening)}`} />
         <StatCard label="Bank Balance (closing)" value={money(rz.bank.closing)} icon={Landmark} accent="sky" foot={`Opened at ${money(rz.bank.opening)}`} />
-        <StatCard label="Received Today" value={money(k.receipts_total)} icon={Receipt} accent="aqua" foot={`${money(k.cash_inflow)} cash · ${money(k.bank_inflow)} bank`} />
+        <StatCard label={isSingleDay ? 'Received Today' : 'Received in Period'} value={money(k.receipts_total)} icon={Receipt} accent="aqua" foot={`${money(k.cash_inflow)} cash · ${money(k.bank_inflow)} bank`} />
         <StatCard
-          label="Net Profit Today"
+          label={isSingleDay ? 'Net Profit Today' : 'Net Profit in Period'}
           value={money(k.net_profit)}
           icon={TrendingUp}
           accent={k.net_profit >= 0 ? 'violet' : 'rose'}
@@ -509,20 +515,20 @@ export default function DayDiary() {
 
       <div className="stack" style={{ marginTop: 16 }}>
         {tab === 'daybook' && <DayBook d={d} onDeleteCashBook={save} confirm={confirm} onManage={() => setModal('banks')} />}
-        {tab === 'history' && <HistoryTab onOpenDay={(day) => { setDate(day); setTab('daybook'); }} />}
-        {tab === 'charts' && <ChartsTab date={date} />}
+        {tab === 'history' && <HistoryTab onOpenDay={(day) => { setRange({ from: day, to: day }); setTab('daybook'); }} />}
+        {tab === 'charts' && <ChartsTab date={range.to} />}
         {tab === 'trading' && <TradingTab d={d} />}
         {tab === 'pl' && <ProfitLossTab d={d} />}
         {tab === 'balance' && <BalanceTab d={d} />}
         {tab === 'parties' && <PartiesTab d={d} />}
-        {tab === 'notes' && <NotesTab d={d} date={date} />}
+        {tab === 'notes' && <NotesTab d={d} date={range.to} />}
       </div>
 
       {modal === 'expense' && categories && bankData && (
-        <ExpenseModal date={date} categories={categories} banks={openBanks} onClose={() => setModal(null)} />
+        <ExpenseModal date={range.to} categories={categories} banks={openBanks} onClose={() => setModal(null)} />
       )}
       {modal === 'cashbook' && kinds && bankData && (
-        <CashBookModal date={date} kinds={kinds} banks={openBanks} onClose={() => setModal(null)} />
+        <CashBookModal date={range.to} kinds={kinds} banks={openBanks} onClose={() => setModal(null)} />
       )}
       {modal === 'banks' && bankData && (
         <BankAccountsModal accounts={allBanks} onClose={() => setModal(null)} />
@@ -599,7 +605,7 @@ function DayBook({ d, onDeleteCashBook, confirm, onManage }) {
           ...d.receipts.customer_payments.map((p) => ({ ...p, _from: p.customer_name, _what: p.linked_invoice ? `Against ${p.linked_invoice}` : 'Ledger recovery' })),
           ...d.receipts.other_income.map((e) => ({ ...e, _from: e.category || 'Other income', _what: e.kind_label, method: e.to_account, bank_account_name: e.to_bank_name })),
         ]}
-        empty="No money received on this day"
+        empty="No money received in this period"
         columns={[
           { key: 'ref', label: 'Ref', render: (r) => <span className="mono">{r.ref}</span> },
           { key: 'from', label: 'Received From', render: (r) => <span className="strong">{r._from}</span> },
@@ -619,7 +625,7 @@ function DayBook({ d, onDeleteCashBook, confirm, onManage }) {
           ...d.cash_book.bank_charges.map((e) => ({ ...e, _to: 'Bank charges', _what: e.note || e.kind_label, method: e.from_account, bank_account_name: e.from_bank_name })),
           ...d.cash_book.drawings.map((e) => ({ ...e, _to: 'Owner drawings', _what: e.note || e.kind_label, method: e.from_account, bank_account_name: e.from_bank_name })),
         ]}
-        empty="No money paid out on this day"
+        empty="No money paid out in this period"
         columns={[
           { key: 'ref', label: 'Ref', render: (r) => <span className="mono">{r.ref}</span> },
           { key: 'to', label: 'Paid To / For', render: (r) => <span className="strong">{r._to}</span> },
@@ -633,7 +639,7 @@ function DayBook({ d, onDeleteCashBook, confirm, onManage }) {
         title="Sales & Invoices"
         total={d.kpis.sales_total}
         rows={d.inflows.sales}
-        empty="No sales on this day"
+        empty="No sales in this period"
         columns={[
           { key: 'inv', label: 'Invoice', render: (r) => <span className="mono">{r.invoice_no}</span> },
           { key: 'cust', label: 'Customer', render: (r) => <span className="strong">{r.customer_name}</span> },
@@ -648,7 +654,7 @@ function DayBook({ d, onDeleteCashBook, confirm, onManage }) {
         title="Purchases & Vendor Bills"
         total={d.kpis.purchases_total}
         rows={d.outflows.purchases}
-        empty="No purchases on this day"
+        empty="No purchases in this period"
         columns={[
           { key: 'no', label: 'Bill', render: (r) => <span className="mono">{r.purchase_no}</span> },
           { key: 'vend', label: 'Vendor', render: (r) => <span className="strong">{r.vendor_name}</span> },
@@ -663,7 +669,7 @@ function DayBook({ d, onDeleteCashBook, confirm, onManage }) {
         title="Cash ↔ Bank Transfers & Capital"
         icon={ArrowRightLeft}
         rows={[...d.cash_book.transfers, ...d.cash_book.capital]}
-        empty="No transfers or capital movements on this day"
+        empty="No transfers or capital movements in this period"
         columns={[
           { key: 'ref', label: 'Ref', render: (r) => <span className="mono">{r.ref}</span> },
           { key: 'kind', label: 'Type', render: (r) => <span className="badge violet">{r.kind_label}</span> },
@@ -733,7 +739,7 @@ function TradingTab({ d }) {
   return (
     <>
       <Ledger
-        title={`Trading Account — ${fmtDateLong(d.date)}`}
+        title={`Trading Account — ${periodLabel(d)}`}
         left={{ heading: 'Dr — Debit Side', rows: t.debit }}
         right={{ heading: 'Cr — Credit Side', rows: t.credit }}
         foot={
@@ -750,7 +756,7 @@ function TradingTab({ d }) {
       />
       <div className="grid grid-2">
         <div className="card">
-          <div className="card-head"><h3>Stock Movement of the Day</h3></div>
+          <div className="card-head"><h3>Stock Movement</h3></div>
           <div className="card-body">
             <div className="summary-line"><span>Opening stock value</span><b>{money(d.opening_stock.value)}</b></div>
             <div className="summary-line"><span>Opening units</span><b>{d.opening_stock.units}</b></div>
@@ -761,7 +767,7 @@ function TradingTab({ d }) {
         <Rows
           title="Stock Entries Recorded"
           rows={d.stock_movements}
-          empty="No stock moved on this day"
+          empty="No stock moved in this period"
           columns={[
             { key: 'prod', label: 'Product', render: (r) => <span className="strong">{r.product_name}</span> },
             { key: 'type', label: 'Source', render: (r) => <span className="badge indigo">{r.ref_type}</span> },
@@ -787,13 +793,13 @@ function ProfitLossTab({ d }) {
   return (
     <>
       <div className="card">
-        <div className="card-head"><h3>Profit & Loss Account — {fmtDateLong(d.date)}</h3></div>
+        <div className="card-head"><h3>Profit & Loss Account — {periodLabel(d)}</h3></div>
         <div className="card-body">
           <div className="summary-line"><span>Gross Profit (from trading account)</span><b>{money(p.gross_profit)}</b></div>
           <div className="summary-line"><span>Add: Other Income</span><b className="pos">+{money(p.other_income)}</b></div>
           <div className="divider" />
           {p.expenses_by_group.length === 0 ? (
-            <p className="muted small" style={{ margin: '4px 0' }}>No expenses recorded on this day.</p>
+            <p className="muted small" style={{ margin: '4px 0' }}>No expenses recorded in this period.</p>
           ) : (
             p.expenses_by_group.map((g) => (
               <div key={g.group_name} style={{ marginBottom: 10 }}>
@@ -823,7 +829,7 @@ function ProfitLossTab({ d }) {
         icon={Receipt}
         total={d.kpis.expenses_total}
         rows={d.outflows.expenses}
-        empty="No expenses recorded on this day"
+        empty="No expenses recorded in this period"
         columns={[
           { key: 'ref', label: 'Ref', render: (r) => <span className="mono">{r.ref}</span> },
           { key: 'cat', label: 'Category', render: (r) => <span className="strong">{r.category}</span> },
@@ -901,25 +907,25 @@ function PartiesTab({ d }) {
   return (
     <>
       <Rows
-        title="Customers Active Today"
+        title="Active Customers"
         icon={Users}
         rows={d.parties.customers}
-        empty="No customer activity on this day"
+        empty="No customer activity in this period"
         columns={[
           { key: 'name', label: 'Customer', render: (r) => <span className="strong">{r.name}</span> },
-          { key: 'billed', label: 'Billed Today', align: 'right', render: (r) => money(r.billed) },
-          { key: 'recv', label: 'Received Today', align: 'right', render: (r) => <span className="pos">{money(r.received)}</span> },
+          { key: 'billed', label: 'Billed', align: 'right', render: (r) => money(r.billed) },
+          { key: 'recv', label: 'Received', align: 'right', render: (r) => <span className="pos">{money(r.received)}</span> },
           { key: 'bal', label: 'Ledger Balance', align: 'right', render: (r) => <b className={r.balance > 0 ? 'neg' : 'pos'}>{money(r.balance)}</b> },
         ]}
       />
       <Rows
-        title="Vendors Active Today"
+        title="Active Vendors"
         rows={d.parties.vendors}
-        empty="No vendor activity on this day"
+        empty="No vendor activity in this period"
         columns={[
           { key: 'name', label: 'Vendor', render: (r) => <span className="strong">{r.name}</span> },
-          { key: 'billed', label: 'Billed Today', align: 'right', render: (r) => money(r.billed) },
-          { key: 'paid', label: 'Paid Today', align: 'right', render: (r) => <span className="neg">{money(r.paid)}</span> },
+          { key: 'billed', label: 'Billed', align: 'right', render: (r) => money(r.billed) },
+          { key: 'paid', label: 'Paid', align: 'right', render: (r) => <span className="neg">{money(r.paid)}</span> },
           { key: 'bal', label: 'Ledger Balance', align: 'right', render: (r) => <b className={r.balance > 0 ? 'neg' : 'pos'}>{money(r.balance)}</b> },
         ]}
       />

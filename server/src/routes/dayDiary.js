@@ -6,7 +6,7 @@
 import { Router } from 'express';
 import { all, get, run, r2, docNo, saleNo, purchaseNo, IS_CASH_SQL, accountOfMethod } from '../db.js';
 import { h, bad, today, addDays, startOfWeek } from '../utils.js';
-import { cashBookFlows, cashBookKindTotals, decorate as decorateCashBook, bankBooks, CASH_BOOK_SELECT } from './cashbook.js';
+import { cashBookFlows, cashBookFlowsRange, cashBookKindTotals, decorate as decorateCashBook, bankBooks, CASH_BOOK_SELECT } from './cashbook.js';
 
 const r = Router();
 
@@ -63,12 +63,43 @@ async function cashFlows(op, date) {
   };
 }
 
+/** Same as cashFlows, but summed over a date range instead of against one op/date. */
+async function cashFlowsRange(from, to) {
+  const pay = await get(
+    `SELECT
+       COALESCE(SUM(CASE WHEN party_type='customer' AND ${IS_CASH_SQL} THEN amount ELSE 0 END),0) AS cash_in,
+       COALESCE(SUM(CASE WHEN party_type='vendor'   AND ${IS_CASH_SQL} THEN amount ELSE 0 END),0) AS cash_out
+     FROM payments WHERE date BETWEEN ? AND ?`,
+    from,
+    to
+  );
+  const exp = await get(
+    `SELECT COALESCE(SUM(CASE WHEN ${IS_CASH_SQL} THEN amount ELSE 0 END),0) AS cash_out
+     FROM expenses WHERE date BETWEEN ? AND ?`,
+    from,
+    to
+  );
+  const cb = await cashBookFlowsRange(from, to);
+  return {
+    cash_in: r2(pay.cash_in + cb.cash_in),
+    cash_out: r2(pay.cash_out + exp.cash_out + cb.cash_out),
+  };
+}
+
 r.get(
   '/day-diary',
   h(async (req) => {
-    const date = req.query.date || today();
-    const prevDate = addDays(date, -1);
-    const nextDate = addDays(date, 1);
+    // A single `date` means from = to = date, same as before. Picking a
+    // different `to` turns this into a period: everything below sums over
+    // the whole window except the balance sheet, which is always a snapshot
+    // as of the end of it (`to`) — a balance sheet has no "opening" side.
+    const to = req.query.to || req.query.date || today();
+    const from = req.query.from || req.query.date || to;
+    const windowDays = Math.round((new Date(to) - new Date(from)) / 86400000) + 1;
+    const prevFrom = addDays(from, -windowDays);
+    const prevTo = addDays(to, -windowDays);
+    const nextFrom = addDays(from, windowDays);
+    const nextTo = addDays(to, windowDays);
 
     // ---------------------------------------------------------------
     // 1. SALES & MONEY RECEIVED (linked to the customer ledger)
@@ -79,9 +110,10 @@ r.get(
          (SELECT COUNT(*) FROM sale_items i WHERE i.sale_id = s.id) AS item_count
        FROM sales s
        JOIN customers c ON c.id = s.customer_id
-       WHERE s.date = ?
+       WHERE s.date BETWEEN ? AND ?
        ORDER BY s.id DESC`,
-      date
+      from,
+      to
     )).map((s) => ({
       ...s,
       invoice_no: saleNo(s),
@@ -95,9 +127,10 @@ r.get(
        JOIN customers c ON c.id = p.party_id
        LEFT JOIN sales s ON s.id = p.sale_id
        LEFT JOIN bank_accounts ba ON ba.id = p.bank_account_id
-       WHERE p.party_type = 'customer' AND p.date = ?
+       WHERE p.party_type = 'customer' AND p.date BETWEEN ? AND ?
        ORDER BY p.id DESC`,
-      date
+      from,
+      to
     )).map((p) => ({
       ...p,
       ref: docNo.payment(p.id),
@@ -114,9 +147,10 @@ r.get(
          (SELECT COUNT(*) FROM purchase_items i WHERE i.purchase_id = pu.id) AS item_count
        FROM purchases pu
        JOIN vendors v ON v.id = pu.vendor_id
-       WHERE pu.date = ?
+       WHERE pu.date BETWEEN ? AND ?
        ORDER BY pu.id DESC`,
-      date
+      from,
+      to
     )).map((pu) => ({
       ...pu,
       purchase_no: purchaseNo(pu),
@@ -129,9 +163,10 @@ r.get(
        JOIN vendors v ON v.id = p.party_id
        LEFT JOIN purchases pu ON pu.id = p.purchase_id
        LEFT JOIN bank_accounts ba ON ba.id = p.bank_account_id
-       WHERE p.party_type = 'vendor' AND p.date = ?
+       WHERE p.party_type = 'vendor' AND p.date BETWEEN ? AND ?
        ORDER BY p.id DESC`,
-      date
+      from,
+      to
     )).map((p) => ({
       ...p,
       ref: docNo.payment(p.id),
@@ -140,22 +175,23 @@ r.get(
     }));
 
     // ---------------------------------------------------------------
-    // 3. EXPENSES & CASH BOOK ENTRIES FOR THE DAY
+    // 3. EXPENSES & CASH BOOK ENTRIES FOR THE WINDOW
     // ---------------------------------------------------------------
     const expenses = (await all(
       `SELECT e.*, COALESCE(c.group_name, 'Other Expense') AS group_name, ba.name AS bank_account_name
        FROM expenses e
        LEFT JOIN expense_categories c ON c.name = e.category
        LEFT JOIN bank_accounts ba ON ba.id = e.bank_account_id
-       WHERE e.date = ? ORDER BY e.id DESC`,
-      date
+       WHERE e.date BETWEEN ? AND ? ORDER BY e.id DESC`,
+      from,
+      to
     )).map((e) => ({
       ...e,
       ref: docNo.expense(e.id),
       account: accountOfMethod(e.method),
     }));
 
-    const cashBookEntries = (await all(`${CASH_BOOK_SELECT} WHERE c.date = ? ORDER BY c.id DESC`, date)).map(decorateCashBook);
+    const cashBookEntries = (await all(`${CASH_BOOK_SELECT} WHERE c.date BETWEEN ? AND ? ORDER BY c.id DESC`, from, to)).map(decorateCashBook);
     const byKind = (k) => cashBookEntries.filter((e) => e.kind === k);
     const otherIncome = byKind('income');
     const transfers = byKind('transfer');
@@ -167,19 +203,22 @@ r.get(
     // ---------------------------------------------------------------
     // 4. ROZNAMCHA — CASH BOOK & BANK BOOK
     // ---------------------------------------------------------------
-    const before = await cashFlows('<', date);
-    const onDay = await cashFlows('=', date);
+    const before = await cashFlows('<', from);
+    const inWindow = await cashFlowsRange(from, to);
 
     const openingCash = r2(before.cash_in - before.cash_out);
-    const closingCash = r2(openingCash + onDay.cash_in - onDay.cash_out);
+    const closingCash = r2(openingCash + inWindow.cash_in - inWindow.cash_out);
 
     // Each bank account keeps its own book; the combined figure is their sum.
-    const banks = await bankBooks(date);
+    const banks = await bankBooks(to, from);
     const openingBank = banks.total.opening;
     const closingBank = banks.total.closing;
 
-    const noteRow = await get('SELECT * FROM day_diary_notes WHERE date = ?', date) || {
-      date,
+    // Notes, the counted-cash variance and tasks are a single day's notebook
+    // page, not a period: they stay pinned to the end of the window, which is
+    // "today" in the common case of a single selected day.
+    const noteRow = (await get('SELECT * FROM day_diary_notes WHERE date = ?', to)) || {
+      date: to,
       notes: '',
       closing_cash_actual: null,
     };
@@ -189,8 +228,8 @@ r.get(
     const roznamcha = {
       cash: {
         opening: openingCash,
-        inflow: onDay.cash_in,
-        outflow: onDay.cash_out,
+        inflow: inWindow.cash_in,
+        outflow: inWindow.cash_out,
         closing: closingCash,
       },
       bank: {
@@ -207,59 +246,61 @@ r.get(
     };
 
     // ---------------------------------------------------------------
-    // 5. TRADING ACCOUNT FOR THE DAY
+    // 5. TRADING ACCOUNT FOR THE WINDOW
     // ---------------------------------------------------------------
-    const daySalesTotal = r2(sales.reduce((a, s) => a + s.total, 0));
-    const dayCogsTotal = r2(sales.reduce((a, s) => a + s.cost_total, 0));
-    const dayPurchasesTotal = r2(purchases.reduce((a, pu) => a + pu.total, 0));
-    const dayExpensesTotal = r2(expenses.reduce((a, e) => a + e.amount, 0));
-    const dayOtherIncome = sumOf(otherIncome);
-    const dayBankCharges = sumOf(bankCharges);
-    const dayGrossProfit = r2(daySalesTotal - dayCogsTotal);
-    const dayNetProfit = r2(dayGrossProfit + dayOtherIncome - dayExpensesTotal - dayBankCharges);
+    const periodSalesTotal = r2(sales.reduce((a, s) => a + s.total, 0));
+    const periodCogsTotal = r2(sales.reduce((a, s) => a + s.cost_total, 0));
+    const periodPurchasesTotal = r2(purchases.reduce((a, pu) => a + pu.total, 0));
+    const periodExpensesTotal = r2(expenses.reduce((a, e) => a + e.amount, 0));
+    const periodOtherIncome = sumOf(otherIncome);
+    const periodBankCharges = sumOf(bankCharges);
+    const periodGrossProfit = r2(periodSalesTotal - periodCogsTotal);
+    const periodNetProfit = r2(periodGrossProfit + periodOtherIncome - periodExpensesTotal - periodBankCharges);
 
-    const openingStock = await stockValuationAsOf(prevDate);
-    const closingStock = await stockValuationAsOf(date);
+    const openingStock = await stockValuationAsOf(addDays(from, -1));
+    const closingStock = await stockValuationAsOf(to);
 
     const assemblies = (await all(
       `SELECT a.*, p.name AS product_name, p.unit
        FROM assemblies a JOIN products p ON p.id = a.product_id
-       WHERE a.date = ? ORDER BY a.id DESC`,
-      date
+       WHERE a.date BETWEEN ? AND ? ORDER BY a.id DESC`,
+      from,
+      to
     )).map((a) => ({ ...a, ref: docNo.assembly(a.id) }));
 
-    const dayAssemblyAddedCost = r2(assemblies.reduce((acc, a) => acc + a.labor_cost + a.other_cost, 0));
+    const periodAssemblyAddedCost = r2(assemblies.reduce((acc, a) => acc + a.labor_cost + a.other_cost, 0));
 
     // Trading account in classic debit / credit form. Goods consumed by assembly
     // stay inside stock, so only the labour and overhead added by a production
-    // run are a fresh charge against the day.
+    // run are a fresh charge against the window.
     const tradingAccount = {
       debit: [
-        { label: 'Opening Stock (start of day)', amount: openingStock.value },
-        { label: 'Purchases (goods inward)', amount: dayPurchasesTotal },
-        { label: 'Manufacturing Labour & Overhead', amount: dayAssemblyAddedCost },
-        { label: 'Gross Profit c/d', amount: Math.max(dayGrossProfit, 0) },
+        { label: 'Opening Stock (start of period)', amount: openingStock.value },
+        { label: 'Purchases (goods inward)', amount: periodPurchasesTotal },
+        { label: 'Manufacturing Labour & Overhead', amount: periodAssemblyAddedCost },
+        { label: 'Gross Profit c/d', amount: Math.max(periodGrossProfit, 0) },
       ],
       credit: [
-        { label: 'Sales Revenue', amount: daySalesTotal },
-        { label: 'Closing Stock (end of day)', amount: closingStock.value },
-        { label: 'Gross Loss c/d', amount: dayGrossProfit < 0 ? Math.abs(dayGrossProfit) : 0 },
+        { label: 'Sales Revenue', amount: periodSalesTotal },
+        { label: 'Closing Stock (end of period)', amount: closingStock.value },
+        { label: 'Gross Loss c/d', amount: periodGrossProfit < 0 ? Math.abs(periodGrossProfit) : 0 },
       ],
-      cost_of_goods_sold: dayCogsTotal,
-      gross_profit: dayGrossProfit,
-      gross_margin_pct: daySalesTotal > 0 ? r2((dayGrossProfit / daySalesTotal) * 100) : 0,
+      cost_of_goods_sold: periodCogsTotal,
+      gross_profit: periodGrossProfit,
+      gross_margin_pct: periodSalesTotal > 0 ? r2((periodGrossProfit / periodSalesTotal) * 100) : 0,
     };
 
     // ---------------------------------------------------------------
-    // 6. PROFIT & LOSS FOR THE DAY
+    // 6. PROFIT & LOSS FOR THE WINDOW
     // ---------------------------------------------------------------
     const expensesByCategory = (await all(
       `SELECT e.category, COALESCE(c.group_name, 'Other Expense') AS group_name,
               SUM(e.amount) AS total, COUNT(*) AS count
        FROM expenses e LEFT JOIN expense_categories c ON c.name = e.category
-       WHERE e.date = ?
+       WHERE e.date BETWEEN ? AND ?
        GROUP BY e.category ORDER BY total DESC`,
-      date
+      from,
+      to
     )).map((c) => ({ ...c, total: r2(c.total) }));
 
     const groupMap = new Map();
@@ -269,27 +310,27 @@ r.get(
       g.items.push(row);
       groupMap.set(row.group_name, g);
     }
-    if (dayBankCharges > 0) {
+    if (periodBankCharges > 0) {
       const g = groupMap.get('Other Expense') || { group_name: 'Other Expense', total: 0, items: [] };
-      g.total = r2(g.total + dayBankCharges);
-      g.items.push({ category: 'Bank Charges (cash book)', group_name: 'Other Expense', total: dayBankCharges, count: bankCharges.length });
+      g.total = r2(g.total + periodBankCharges);
+      g.items.push({ category: 'Bank Charges (cash book)', group_name: 'Other Expense', total: periodBankCharges, count: bankCharges.length });
       groupMap.set('Other Expense', g);
     }
     const expensesByGroup = [...groupMap.values()].sort((a, b) => b.total - a.total);
 
     const profitAndLoss = {
-      gross_profit: dayGrossProfit,
-      other_income: dayOtherIncome,
+      gross_profit: periodGrossProfit,
+      other_income: periodOtherIncome,
       expenses_breakdown: expensesByCategory,
       expenses_by_group: expensesByGroup,
-      bank_charges: dayBankCharges,
-      total_expenses: r2(dayExpensesTotal + dayBankCharges),
-      net_profit: dayNetProfit,
-      net_margin_pct: daySalesTotal > 0 ? r2((dayNetProfit / daySalesTotal) * 100) : 0,
+      bank_charges: periodBankCharges,
+      total_expenses: r2(periodExpensesTotal + periodBankCharges),
+      net_profit: periodNetProfit,
+      net_margin_pct: periodSalesTotal > 0 ? r2((periodNetProfit / periodSalesTotal) * 100) : 0,
     };
 
     // ---------------------------------------------------------------
-    // 7. BALANCE SHEET AS OF THIS DATE
+    // 7. BALANCE SHEET — ALWAYS A SNAPSHOT AS OF THE END OF THE WINDOW
     // ---------------------------------------------------------------
     const customersOut = (await all(
       `SELECT c.id, c.name, c.phone,
@@ -297,8 +338,8 @@ r.get(
          + COALESCE((SELECT SUM(total) FROM sales WHERE customer_id = c.id AND date <= ?), 0)
          - COALESCE((SELECT SUM(amount) FROM payments WHERE party_type = 'customer' AND party_id = c.id AND date <= ?), 0) AS balance
        FROM customers c`,
-      date,
-      date
+      to,
+      to
     )).map((c) => ({ ...c, balance: r2(c.balance) }));
     const totalReceivables = r2(customersOut.reduce((acc, c) => acc + Math.max(c.balance, 0), 0));
     const customerAdvances = r2(customersOut.reduce((acc, c) => acc + Math.max(-c.balance, 0), 0));
@@ -309,8 +350,8 @@ r.get(
          + COALESCE((SELECT SUM(total) FROM purchases WHERE vendor_id = v.id AND date <= ?), 0)
          - COALESCE((SELECT SUM(amount) FROM payments WHERE party_type = 'vendor' AND party_id = v.id AND date <= ?), 0) AS balance
        FROM vendors v`,
-      date,
-      date
+      to,
+      to
     )).map((v) => ({ ...v, balance: r2(v.balance) }));
     const totalPayables = r2(vendorsOut.reduce((acc, v) => acc + Math.max(v.balance, 0), 0));
     const vendorAdvances = r2(vendorsOut.reduce((acc, v) => acc + Math.max(-v.balance, 0), 0));
@@ -330,13 +371,13 @@ r.get(
       total_liabilities: r2(totalPayables + customerAdvances),
     };
 
-    // Cumulative earnings and owner movements up to this date.
+    // Cumulative earnings and owner movements up to the end of the window.
     const cumTrade = await get(
       'SELECT COALESCE(SUM(total),0) AS s, COALESCE(SUM(cost_total),0) AS c FROM sales WHERE date <= ?',
-      date
+      to
     );
-    const cumExpenses = (await get('SELECT COALESCE(SUM(amount),0) AS e FROM expenses WHERE date <= ?', date)).e;
-    const cumCashBook = await cashBookKindTotals('<=', date);
+    const cumExpenses = (await get('SELECT COALESCE(SUM(amount),0) AS e FROM expenses WHERE date <= ?', to)).e;
+    const cumCashBook = await cashBookKindTotals('<=', to);
     const retainedEarnings = r2(
       cumTrade.s - cumTrade.c + cumCashBook.income - cumExpenses - cumCashBook.bank_charge
     );
@@ -357,7 +398,7 @@ r.get(
     };
 
     const balanceSheet = {
-      as_of_date: date,
+      as_of_date: to,
       assets,
       liabilities,
       equity,
@@ -366,7 +407,7 @@ r.get(
     };
 
     // ---------------------------------------------------------------
-    // 8. PARTY ACTIVITY — WHO MOVED TODAY, AND WHERE THEY STAND
+    // 8. PARTY ACTIVITY — WHO MOVED IN THIS WINDOW, AND WHERE THEY STAND
     // ---------------------------------------------------------------
     const balanceOfCustomer = new Map(customersOut.map((c) => [c.id, c.balance]));
     const balanceOfVendor = new Map(vendorsOut.map((v) => [v.id, v.balance]));
@@ -411,39 +452,44 @@ r.get(
     const stockMovements = await all(
       `SELECT m.*, p.name AS product_name, p.unit
        FROM stock_movements m JOIN products p ON p.id = m.product_id
-       WHERE m.date = ? ORDER BY m.id DESC`,
-      date
+       WHERE m.date BETWEEN ? AND ? ORDER BY m.id DESC`,
+      from,
+      to
     );
 
-    const tasks = await all('SELECT * FROM day_diary_tasks WHERE date = ? ORDER BY id ASC', date);
+    const tasks = await all('SELECT * FROM day_diary_tasks WHERE date = ? ORDER BY id ASC', to);
 
     return {
-      date,
-      prev_date: prevDate,
-      next_date: nextDate,
+      date: to,
+      from,
+      to,
+      prev_date: prevTo,
+      next_date: nextTo,
+      prev: { from: prevFrom, to: prevTo },
+      next: { from: nextFrom, to: nextTo },
       kpis: {
-        total_inflow: r2(onDay.cash_in + banks.total.inflow),
-        cash_inflow: onDay.cash_in,
+        total_inflow: r2(inWindow.cash_in + banks.total.inflow),
+        cash_inflow: inWindow.cash_in,
         bank_inflow: banks.total.inflow,
-        total_outflow: r2(onDay.cash_out + banks.total.outflow),
-        cash_outflow: onDay.cash_out,
+        total_outflow: r2(inWindow.cash_out + banks.total.outflow),
+        cash_outflow: inWindow.cash_out,
         bank_outflow: banks.total.outflow,
-        net_cash_flow: r2(onDay.cash_in + banks.total.inflow - onDay.cash_out - banks.total.outflow),
-        sales_total: daySalesTotal,
+        net_cash_flow: r2(inWindow.cash_in + banks.total.inflow - inWindow.cash_out - banks.total.outflow),
+        sales_total: periodSalesTotal,
         sales_count: sales.length,
-        purchases_total: dayPurchasesTotal,
+        purchases_total: periodPurchasesTotal,
         purchases_count: purchases.length,
-        expenses_total: dayExpensesTotal,
-        other_income: dayOtherIncome,
-        gross_profit: dayGrossProfit,
-        net_profit: dayNetProfit,
-        receipts_total: r2(customerPayments.reduce((a, p) => a + p.amount, 0) + dayOtherIncome),
+        expenses_total: periodExpensesTotal,
+        other_income: periodOtherIncome,
+        gross_profit: periodGrossProfit,
+        net_profit: periodNetProfit,
+        receipts_total: r2(customerPayments.reduce((a, p) => a + p.amount, 0) + periodOtherIncome),
       },
       roznamcha,
       receipts: {
         customer_payments: customerPayments,
         other_income: otherIncome,
-        total: r2(customerPayments.reduce((a, p) => a + p.amount, 0) + dayOtherIncome),
+        total: r2(customerPayments.reduce((a, p) => a + p.amount, 0) + periodOtherIncome),
       },
       inflows: { sales, customer_payments: customerPayments },
       outflows: { expenses, purchases, vendor_payments: vendorPayments },
@@ -456,8 +502,8 @@ r.get(
         drawings,
         totals: {
           transfers: sumOf(transfers),
-          other_income: dayOtherIncome,
-          bank_charges: dayBankCharges,
+          other_income: periodOtherIncome,
+          bank_charges: periodBankCharges,
           capital: sumOf(capitalIn),
           drawings: sumOf(drawings),
         },
