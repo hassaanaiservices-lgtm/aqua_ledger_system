@@ -312,6 +312,58 @@ r.post(
   })
 );
 
+r.patch(
+  '/cash-book/:id',
+  h(async (req) => {
+    const existing = await get('SELECT * FROM cash_book WHERE id = ?', num(req.params.id));
+    if (!existing) throw notFound();
+    const b = req.body;
+    const pick = (key) => (b[key] !== undefined ? b[key] : existing[key]);
+
+    const kind = str(pick('kind'));
+    const meta = CASH_BOOK_KINDS[kind];
+    if (!meta) throw bad('Select a valid cash book entry type');
+
+    const amount = r2(pick('amount'));
+    if (amount <= 0) throw bad('Amount must be greater than zero');
+
+    const fromAccount = meta.needs.includes('from_account') ? str(pick('from_account')) : null;
+    const toAccount = meta.needs.includes('to_account') ? str(pick('to_account')) : null;
+
+    for (const field of meta.needs) {
+      const v = field === 'from_account' ? fromAccount : toAccount;
+      if (v !== 'cash' && v !== 'bank') {
+        throw bad(`${meta.label}: choose a valid ${field === 'from_account' ? 'source' : 'destination'} account (Cash or Bank)`);
+      }
+    }
+
+    const fromBankId = fromAccount === 'bank' ? await requireBankAccount(pick('from_bank_id'), `${meta.label} (from)`) : null;
+    const toBankId = toAccount === 'bank' ? await requireBankAccount(pick('to_bank_id'), `${meta.label} (to)`) : null;
+
+    if (kind === 'transfer') {
+      const sameCash = fromAccount === 'cash' && toAccount === 'cash';
+      const sameBank = fromAccount === 'bank' && toAccount === 'bank' && fromBankId === toBankId;
+      if (sameCash || sameBank) throw bad('A transfer must move money between two different accounts');
+    }
+
+    await run(
+      `UPDATE cash_book SET date=?, kind=?, from_account=?, to_account=?, from_bank_id=?, to_bank_id=?, amount=?, category=?, reference=?, note=? WHERE id=?`,
+      str(pick('date')) || existing.date,
+      kind,
+      fromAccount,
+      toAccount,
+      fromBankId,
+      toBankId,
+      amount,
+      str(pick('category')),
+      str(pick('reference')),
+      str(pick('note')),
+      existing.id
+    );
+    return decorate(await get(`${CASH_BOOK_SELECT} WHERE c.id = ?`, existing.id));
+  })
+);
+
 r.delete(
   '/cash-book/:id',
   h(async (req) => {
