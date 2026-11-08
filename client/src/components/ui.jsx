@@ -196,13 +196,15 @@ export const Loading = () => (
 );
 
 export function Field({ label, hint, children, className = '' }) {
+  // A <div>, not <label>: Chromium fails to open the native picker on the
+  // calendar icon of an <input type="date"> nested inside a <label>.
   return (
-    <label className={`field ${className}`}>
+    <div className={`field ${className}`}>
       <span>
         {label} {hint && <span className="hint">· {hint}</span>}
       </span>
       {children}
-    </label>
+    </div>
   );
 }
 
