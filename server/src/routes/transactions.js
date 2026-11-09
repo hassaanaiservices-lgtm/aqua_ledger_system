@@ -607,8 +607,9 @@ r.get(
     if (category) where.push('e.category = ?') && params.push(category);
     if (group) where.push('COALESCE(c.group_name, ?) = ?') && params.push('Other Expense', group);
     return (await all(
-      `SELECT e.*, COALESCE(c.group_name, 'Other Expense') AS group_name
+      `SELECT e.*, COALESCE(c.group_name, 'Other Expense') AS group_name, ba.name AS bank_account_name
        FROM expenses e LEFT JOIN expense_categories c ON c.name = e.category
+       LEFT JOIN bank_accounts ba ON ba.id = e.bank_account_id
        ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
        ORDER BY e.date DESC, e.id DESC LIMIT 2000`,
       ...params
@@ -684,6 +685,36 @@ r.post(
       str(b.note)
     );
     return { id: Number(info.lastInsertRowid) };
+  })
+);
+
+r.patch(
+  '/expenses/:id',
+  h(async (req) => {
+    const existing = await get('SELECT * FROM expenses WHERE id = ?', req.params.id);
+    if (!existing) throw notFound();
+    const b = req.body;
+    const pick = (key) => (b[key] !== undefined ? b[key] : existing[key]);
+
+    const category = str(pick('category'));
+    if (!category) throw bad('Category is required');
+    const amount = r2(pick('amount'));
+    if (amount <= 0) throw bad('Amount must be greater than zero');
+    const method = normalizeMethod(pick('method'));
+    if (!method) throw bad('Select a valid payment method');
+    const bankId = await requireBankAccountId(method, pick('bank_account_id'));
+
+    await run(
+      'UPDATE expenses SET date=?, category=?, amount=?, method=?, bank_account_id=?, note=? WHERE id=?',
+      str(pick('date')) || existing.date,
+      category,
+      amount,
+      method,
+      bankId,
+      str(pick('note')),
+      existing.id
+    );
+    return { ok: true, id: existing.id };
   })
 );
 

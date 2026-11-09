@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { 
   LayoutDashboard, Package, Users, Truck, ShoppingCart, 
   Factory, CalendarDays, FileBarChart, Settings as SettingsIcon,
-  LogOut, Menu, X, Droplets, Search, BookOpen
+  LogOut, Menu, X, Droplets, Search, BookOpen, ScrollText, Receipt
 } from 'lucide-react';
 import { AppProvider, useApp } from './components/ui';
 import { api, getToken, setToken } from './lib/api';
@@ -15,6 +15,8 @@ import Purchases from './pages/Purchases';
 import Assembly from './pages/Assembly';
 import CalendarPage from './pages/CalendarPage';
 import DayDiary from './pages/DayDiary';
+import CashBookLedger from './pages/CashBookLedger';
+import ExpenseLedger from './pages/ExpenseLedger';
 import Reports from './pages/Reports';
 import Settings from './pages/Settings';
 import Auth from './pages/Auth';
@@ -28,6 +30,8 @@ const NAV_ITEMS = [
   { id: 'purchases', label: 'Purchases', icon: Truck },
   { id: 'assembly', label: 'Assembly & BOM', icon: Factory },
   { id: 'daydiary', label: 'Day Diary & Accounts', icon: BookOpen },
+  { id: 'cashledger', label: 'Cash Book Ledger', icon: ScrollText },
+  { id: 'expenseledger', label: 'Expense Ledger', icon: Receipt },
   { id: 'calendar', label: 'Business Calendar', icon: CalendarDays },
   { id: 'reports', label: 'Reports & Export', icon: FileBarChart },
   { id: 'settings', label: 'Settings & Backup', icon: SettingsIcon },
@@ -61,6 +65,10 @@ function MainLayout() {
         return <Assembly onNavigate={setCurrentPage} />;
       case 'daydiary':
         return <DayDiary onNavigate={setCurrentPage} />;
+      case 'cashledger':
+        return <CashBookLedger onNavigate={setCurrentPage} />;
+      case 'expenseledger':
+        return <ExpenseLedger onNavigate={setCurrentPage} />;
       case 'calendar':
         return <CalendarPage onNavigate={setCurrentPage} />;
       case 'reports':
