@@ -1,498 +1,339 @@
 import React, { useState } from 'react';
-import { 
-  Factory, Plus, Search, Layers, Calculator, CheckCircle2, 
-  AlertTriangle, ArrowRight, History, Trash2, Pencil, Boxes 
-} from 'lucide-react';
+import { Factory, Plus, Trash2, Eye } from 'lucide-react';
 import { useApp, useFetch, PageHeader, Modal, Field, Loading, Empty, useSaver } from '../components/ui';
-import { money, fmtDate } from '../lib/format';
+import { money, fmtDate, today } from '../lib/format';
 import { api } from '../lib/api';
 
-export default function Assembly({ onNavigate }) {
-  const { lookups, toast, confirm, loadLookups } = useApp();
-  const [activeTab, setActiveTab] = useState('boms'); // 'boms' or 'history'
-  const [bomModal, setBomModal] = useState(null); // null or product_id
-  const [assembleModal, setAssembleModal] = useState(null); // null or product_id
+const blankRow = () => ({ component_id: '', qty: 1 });
+
+/**
+ * Assembly in one form: pick the machine being made, the raw parts that go
+ * into one unit, labour and overhead per unit, and how many units. The parts
+ * leave stock, the finished machines enter stock at the full cost, and the
+ * parts list is remembered as that machine's recipe for next time.
+ */
+function AssembleModal({ products, onClose, onDone }) {
   const [runSave, saving] = useSaver();
+  const { toast } = useApp();
+  const [productId, setProductId] = useState('');
+  const [qty, setQty] = useState(1);
+  const [date, setDate] = useState(today());
+  const [items, setItems] = useState([blankRow()]);
+  const [labor, setLabor] = useState(0);
+  const [overhead, setOverhead] = useState(0);
+  const [note, setNote] = useState('');
+  const [remember, setRemember] = useState(true);
 
-  // Assemblies & BOMs fetch
-  const { data: boms, loading: loadingBoms, reload: reloadBoms } = useFetch('/bom');
-  const { data: assemblies, loading: loadingAssemblies, reload: reloadAssemblies } = useFetch('/assemblies');
+  const byId = new Map(products.map((p) => [p.id, p]));
+  const finished = products.filter((p) => p.type === 'finished');
+  const others = products.filter((p) => p.type !== 'finished');
 
-  // BOM Editor state
-  const [bomItems, setBomItems] = useState([]);
-  const [laborCost, setLaborCost] = useState(0);
-  const [overheadCost, setOverheadCost] = useState(0);
-  const [selectedProduct, setSelectedProduct] = useState(null);
-
-  // Assemble Run state
-  const [assembleQty, setAssembleQty] = useState(1);
-  const [assembleDate, setAssembleDate] = useState(new Date().toISOString().slice(0, 10));
-  const [assembleNote, setAssembleNote] = useState('');
-  const [bomPreview, setBomPreview] = useState(null);
-
-  // Open BOM Editor
-  const handleOpenBomEditor = async (productId) => {
+  // Picking the machine fills in its saved recipe, if it has one.
+  const pickProduct = async (id) => {
+    setProductId(id);
+    if (!id) return;
     try {
-      const data = await api.get(`/bom/${productId}`);
-      setSelectedProduct(data.product);
-      setBomItems(data.items.map((it) => ({ component_id: it.component_id, qty: it.qty })));
-      setLaborCost(data.labor_cost);
-      setOverheadCost(data.other_cost);
-      setBomModal(productId);
+      const bom = await api.get(`/bom/${id}`, { qty: 1 });
+      setItems(bom.items.length ? bom.items.map((i) => ({ component_id: i.component_id, qty: i.qty })) : [blankRow()]);
+      setLabor(bom.labor_cost || 0);
+      setOverhead(bom.other_cost || 0);
     } catch (err) {
       toast(err.message, 'error');
     }
   };
 
-  const handleSaveBom = async (e) => {
-    e.preventDefault();
-    const cleanItems = bomItems.filter((it) => it.component_id && Number(it.qty) > 0);
-    if (!cleanItems.length) {
-      toast('Please add at least one component to the recipe', 'error');
-      return;
-    }
+  const setRow = (i, patch) => setItems(items.map((r, j) => (j === i ? { ...r, ...patch } : r)));
 
-    await runSave(async () => {
-      await api.put(`/bom/${bomModal}`, {
-        items: cleanItems,
-        labor_cost: Number(laborCost) || 0,
-        overhead_cost: Number(overheadCost) || 0,
-      });
-      toast('Product assembly recipe (BOM) saved');
-      setBomModal(null);
-      reloadBoms();
+  const units = Number(qty) || 0;
+  const rows = items
+    .filter((r) => r.component_id)
+    .map((r) => {
+      const p = byId.get(Number(r.component_id));
+      const perUnit = Number(r.qty) || 0;
+      const needed = perUnit * units;
+      return { ...r, p, perUnit, needed, cost: needed * (p?.avg_cost || 0), short: p ? needed > p.stock + 1e-9 : false };
     });
-  };
+  const materialCost = rows.reduce((t, r) => t + r.cost, 0);
+  const laborTotal = (Number(labor) || 0) * units;
+  const overheadTotal = (Number(overhead) || 0) * units;
+  const totalCost = materialCost + laborTotal + overheadTotal;
+  const unitCost = units > 0 ? totalCost / units : 0;
+  const anyShort = rows.some((r) => r.short);
+  const target = byId.get(Number(productId));
 
-  // Open Assembly Run Modal
-  const handleOpenAssemble = async (productId) => {
-    try {
-      const data = await api.get(`/bom/${productId}`, { qty: 1 });
-      setBomPreview(data);
-      setAssembleQty(1);
-      setAssembleDate(new Date().toISOString().slice(0, 10));
-      setAssembleNote('');
-      setAssembleModal(productId);
-    } catch (err) {
-      toast(err.message, 'error');
-    }
-  };
-
-  const handleQtyChange = async (qty) => {
-    const q = Number(qty) || 1;
-    setAssembleQty(q);
-    if (assembleModal) {
-      const data = await api.get(`/bom/${assembleModal}`, { qty: q });
-      setBomPreview(data);
-    }
-  };
-
-  const handleRunAssembly = async (e) => {
+  const submit = async (e) => {
     e.preventDefault();
-    if (!assembleModal || assembleQty <= 0) return;
+    if (!productId) return toast('Choose the product you are making', 'error');
+    if (units <= 0) return toast('Quantity must be more than zero', 'error');
+    const parts = rows.filter((r) => r.perUnit > 0);
+    if (!parts.length) return toast('Add at least one raw product', 'error');
+    if (parts.some((r) => Number(r.component_id) === Number(productId))) {
+      return toast('A product cannot be used to make itself', 'error');
+    }
 
     await runSave(async () => {
       const res = await api.post('/assemblies', {
-        product_id: assembleModal,
-        qty: assembleQty,
-        date: assembleDate,
-        note: assembleNote,
+        product_id: Number(productId),
+        qty: units,
+        date,
+        note,
+        labor_cost: laborTotal,
+        other_cost: overheadTotal,
+        items: parts.map((r) => ({ component_id: Number(r.component_id), qty: r.needed })),
       });
-      toast(`Assembly completed! Added ${assembleQty} units to finished inventory. Cost: ${money(res.unit_cost)}/unit`);
-      setAssembleModal(null);
-      reloadBoms();
-      reloadAssemblies();
-      loadLookups();
+      if (remember) {
+        await api.put(`/bom/${productId}`, {
+          items: parts.map((r) => ({ component_id: Number(r.component_id), qty: r.perUnit })),
+          labor_cost: Number(labor) || 0,
+          overhead_cost: Number(overhead) || 0,
+        });
+      }
+      toast(`${res.ref}: ${units} × ${target?.name} added to stock at ${money(res.unit_cost)} each`);
+      onDone();
     });
   };
 
-  const handleDeleteAssembly = async (a) => {
+  const productOption = (p) => (
+    <option key={p.id} value={p.id}>{p.name} — stock {p.stock} {p.unit}</option>
+  );
+
+  return (
+    <Modal title="Assemble a Product" icon={<Factory size={18} />} size="xl" onClose={onClose}
+      footer={<>
+        <button className="btn" type="button" onClick={onClose}>Cancel</button>
+        <button className="btn btn-primary" type="button" disabled={saving || anyShort} onClick={submit}>
+          {saving ? 'Assembling…' : `Assemble ${units || ''} ${target ? target.unit : ''}`}
+        </button>
+      </>}>
+      <form onSubmit={submit}>
+        <h4 style={{ margin: '0 0 10px' }}>1. What are you making?</h4>
+        <div className="form-grid mb">
+          <Field label="Main Product (e.g. washing machine, cooler) *" className="full">
+            <select value={productId} onChange={(e) => pickProduct(e.target.value)} required>
+              <option value="">Select product…</option>
+              {finished.length > 0 && <optgroup label="Assembled products">{finished.map(productOption)}</optgroup>}
+              {others.length > 0 && <optgroup label="Other products">{others.map(productOption)}</optgroup>}
+            </select>
+          </Field>
+          <Field label="How many units? *">
+            <input type="number" min="1" step="any" value={qty} onChange={(e) => setQty(e.target.value)} required />
+          </Field>
+          <Field label="Date *">
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
+          </Field>
+        </div>
+
+        <h4 style={{ margin: '0 0 10px' }}>2. Raw products used for ONE unit</h4>
+        <div className="table-wrap mb" style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}>
+          <table className="table compact">
+            <thead>
+              <tr>
+                <th>Raw product (motor, body, side window…)</th>
+                <th className="r" style={{ width: 110 }}>Per unit</th>
+                <th className="r">Needed</th>
+                <th className="r">In stock</th>
+                <th className="r">Cost</th>
+                <th style={{ width: 40 }} />
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((r, i) => {
+                const p = byId.get(Number(r.component_id));
+                const needed = (Number(r.qty) || 0) * units;
+                const short = p ? needed > p.stock + 1e-9 : false;
+                return (
+                  <tr key={i}>
+                    <td>
+                      <select value={r.component_id} onChange={(e) => setRow(i, { component_id: e.target.value })}>
+                        <option value="">Select raw product…</option>
+                        {products.filter((x) => String(x.id) !== String(productId)).map((x) => (
+                          <option key={x.id} value={x.id}>{x.name}</option>
+                        ))}
+                      </select>
+                    </td>
+                    <td className="r">
+                      <input type="number" min="0" step="any" className="num" value={r.qty} onChange={(e) => setRow(i, { qty: e.target.value })} />
+                    </td>
+                    <td className="r strong">{p ? `${needed} ${p.unit}` : '—'}</td>
+                    <td className={`r ${short ? 'neg strong' : 'muted'}`}>{p ? `${p.stock} ${p.unit}` : '—'}{short && ' — not enough'}</td>
+                    <td className="r">{p ? money(needed * p.avg_cost) : '—'}</td>
+                    <td className="c">
+                      <button type="button" className="btn btn-sm btn-ghost btn-icon btn-danger" title="Remove" disabled={items.length === 1} onClick={() => setItems(items.filter((_, j) => j !== i))}>
+                        <Trash2 size={14} />
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <button type="button" className="btn btn-sm mb" onClick={() => setItems([...items, blankRow()])}>
+          <Plus size={14} /> Add raw product
+        </button>
+
+        <h4 style={{ margin: '6px 0 10px' }}>3. Labour &amp; overhead for ONE unit</h4>
+        <div className="form-grid mb">
+          <Field label="Labour per unit (Rs)">
+            <input type="number" min="0" step="any" value={labor} onChange={(e) => setLabor(e.target.value)} />
+          </Field>
+          <Field label="Overhead per unit (Rs)" hint="packing, electricity, transport">
+            <input type="number" min="0" step="any" value={overhead} onChange={(e) => setOverhead(e.target.value)} />
+          </Field>
+          <Field label="Note" className="full">
+            <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Optional, e.g. batch for Kashif Electronics" />
+          </Field>
+        </div>
+
+        <div className="summary-box">
+          <div className="summary-line"><span>Raw products</span><b>{money(materialCost)}</b></div>
+          <div className="summary-line"><span>Labour ({units} × {money(Number(labor) || 0)})</span><b>{money(laborTotal)}</b></div>
+          <div className="summary-line"><span>Overhead ({units} × {money(Number(overhead) || 0)})</span><b>{money(overheadTotal)}</b></div>
+          <div className="summary-line total"><span>Total cost</span><b>{money(totalCost)}</b></div>
+          <div className="summary-line" style={{ fontSize: 15 }}>
+            <span>Cost of ONE {target?.name || 'unit'}</span>
+            <b style={{ color: target && target.sale_price && unitCost > target.sale_price ? 'var(--rose)' : 'var(--text)' }}>{money(unitCost)}</b>
+          </div>
+          {target && target.sale_price > 0 && (
+            <div className="summary-line small">
+              <span className="muted">Sale price {money(target.sale_price)} → profit per unit</span>
+              <b className={target.sale_price - unitCost >= 0 ? 'pos' : 'neg'}>{money(target.sale_price - unitCost)}</b>
+            </div>
+          )}
+        </div>
+
+        <label className="row small" style={{ gap: 8, marginTop: 12, cursor: 'pointer' }}>
+          <input type="checkbox" style={{ width: 'auto' }} checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+          Remember these raw products, labour and overhead for this product next time
+        </label>
+        {anyShort && <p className="neg small" style={{ marginBottom: 0 }}>Some raw products are not in stock. Purchase them first or lower the quantity.</p>}
+      </form>
+    </Modal>
+  );
+}
+
+function AssemblyDetail({ id, onClose }) {
+  const { data: a, loading } = useFetch(`/assemblies/${id}`);
+  return (
+    <Modal title={a ? `${a.ref} — ${a.product_name}` : 'Assembly'} icon={<Factory size={18} />} size="lg" onClose={onClose}
+      footer={<button className="btn" onClick={onClose}>Close</button>}>
+      {loading || !a ? <Loading /> : (
+        <>
+          <p className="muted small" style={{ marginTop: 0 }}>{fmtDate(a.date)} · {a.qty} {a.unit} made{a.note ? ` · ${a.note}` : ''}</p>
+          <table className="table compact mb">
+            <thead><tr><th>Raw product used</th><th className="r">Qty</th><th className="r">Cost each</th><th className="r">Total</th></tr></thead>
+            <tbody>
+              {a.items.map((it) => (
+                <tr key={it.id}>
+                  <td>{it.component_name}</td>
+                  <td className="r">{it.qty} {it.unit}</td>
+                  <td className="r">{money(it.unit_cost)}</td>
+                  <td className="r">{money(it.line_total)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="summary-box">
+            <div className="summary-line"><span>Raw products</span><b>{money(a.material_cost)}</b></div>
+            <div className="summary-line"><span>Labour</span><b>{money(a.labor_cost)}</b></div>
+            <div className="summary-line"><span>Overhead</span><b>{money(a.other_cost)}</b></div>
+            <div className="summary-line total"><span>Total</span><b>{money(a.total_cost)}</b></div>
+            <div className="summary-line"><span>Cost per unit</span><b>{money(a.unit_cost)}</b></div>
+          </div>
+        </>
+      )}
+    </Modal>
+  );
+}
+
+export default function Assembly() {
+  const { confirm, loadLookups } = useApp();
+  const [runSave] = useSaver();
+  const [open, setOpen] = useState(false);
+  const [viewId, setViewId] = useState(null);
+  const { data: products, reload: reloadProducts } = useFetch('/products');
+  const { data: assemblies, loading, reload } = useFetch('/assemblies');
+
+  const refresh = () => {
+    reload();
+    reloadProducts();
+    loadLookups();
+  };
+
+  const reverse = async (a) => {
     const ok = await confirm({
-      title: `Reverse Assembly #${a.ref}?`,
-      message: 'This will deduct the finished goods from inventory and return the raw materials back to stock.',
-      okText: 'Reverse Assembly'
+      title: `Reverse ${a.ref}?`,
+      message: `${a.qty} ${a.unit} of ${a.product_name} leave stock and the raw products used go back into stock.`,
+      okText: 'Reverse',
     });
     if (!ok) return;
-
     await runSave(async () => {
       await api.del(`/assemblies/${a.id}`);
-      toast('Assembly reversed & stock returned');
-      reloadBoms();
-      reloadAssemblies();
-      loadLookups();
-    });
+      refresh();
+    }, 'Assembly reversed');
   };
 
   return (
     <div>
-      <PageHeader 
-        title="Product Assembly & Cost Calculation" 
-        subtitle="Manage product recipes (BOM), calculate material and labor costs, and produce finished goods"
-      >
-        <button className="btn btn-primary" onClick={() => onNavigate?.('inventory')}>
-          <Boxes size={16} /> Inventory Catalog
+      <PageHeader title="Assembly" subtitle="Make a finished product from raw products, labour and overhead">
+        <button className="btn btn-primary" disabled={!products} onClick={() => setOpen(true)}>
+          <Plus size={16} /> New Assembly
         </button>
       </PageHeader>
 
-      {/* Tabs */}
-      <div className="card mb">
-        <div className="tabs">
-          <button className={activeTab === 'boms' ? 'on' : ''} onClick={() => setActiveTab('boms')}>
-            Product Recipes & Cost Breakdown
-          </button>
-          <button className={activeTab === 'history' ? 'on' : ''} onClick={() => setActiveTab('history')}>
-            Assembly Production Log
-          </button>
-        </div>
-
-        {activeTab === 'boms' ? (
-          <div className="table-wrap">
-            {loadingBoms ? (
-              <Loading />
-            ) : !boms || boms.length === 0 ? (
-              <Empty title="No assembled products configured">
-                <p className="muted small">Add a product marked as "Assembled Product" in Inventory first.</p>
-                <button className="btn btn-sm btn-primary mt" onClick={() => onNavigate?.('inventory')}>
-                  Go to Inventory
-                </button>
-              </Empty>
-            ) : (
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>Assembled Product</th>
-                    <th>Components</th>
-                    <th className="r">Material Cost</th>
-                    <th className="r">Labor</th>
-                    <th className="r">Overhead</th>
-                    <th className="r">Total Cost / Unit</th>
-                    <th className="r">Sale Price</th>
-                    <th className="r">Buildable Now</th>
-                    <th className="actions">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {boms.map((b) => (
-                    <tr key={b.product_id}>
-                      <td>
-                        <div className="strong" style={{ fontSize: '14.5px' }}>{b.name}</div>
-                        {b.sku && <span className="muted small mono">SKU: {b.sku}</span>}
-                      </td>
-                      <td>
-                        <span className="badge aqua">{b.component_count} components</span>
-                      </td>
-                      <td className="r">{money(b.material_cost)}</td>
-                      <td className="r">{money(b.labor_cost)}</td>
-                      <td className="r">{money(b.other_cost)}</td>
-                      <td className="r strong big" style={{ color: 'var(--aqua)' }}>
-                        {money(b.unit_cost)}
-                      </td>
-                      <td className="r strong">{money(b.sale_price)}</td>
-                      <td className="r">
-                        <span className={`badge ${b.max_buildable > 0 ? 'green' : 'rose'}`} style={{ fontSize: '12.5px', fontWeight: 700 }}>
-                          {b.max_buildable} {b.unit}
-                        </span>
-                      </td>
-                      <td className="actions">
-                        <button 
-                          className="btn btn-sm btn-success" 
-                          title="Assemble & Build finished stock" 
-                          onClick={() => handleOpenAssemble(b.product_id)}
-                          disabled={b.max_buildable <= 0}
-                        >
-                          <Factory size={14} /> Assemble Run
-                        </button>
-                        <button 
-                          className="btn btn-sm btn-ghost" 
-                          title="Configure Recipe / Components" 
-                          onClick={() => handleOpenBomEditor(b.product_id)}
-                        >
-                          <Pencil size={14} /> Edit BOM
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-        ) : (
-          <div className="table-wrap">
-            {loadingAssemblies ? (
-              <Loading />
-            ) : !assemblies || assemblies.length === 0 ? (
-              <Empty title="No assembly runs recorded yet" />
-            ) : (
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>Ref #</th>
-                    <th>Date</th>
-                    <th>Assembled Product</th>
-                    <th className="r">Units Built</th>
-                    <th className="r">Material Cost</th>
-                    <th className="r">Labor Cost</th>
-                    <th className="r">Total Assembly Cost</th>
-                    <th className="r">Cost / Unit</th>
-                    <th className="actions">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {assemblies.map((a) => (
-                    <tr key={a.id}>
-                      <td><span className="badge violet mono strong">{a.ref}</span></td>
-                      <td>{fmtDate(a.date)}</td>
-                      <td><div className="strong">{a.product_name}</div></td>
-                      <td className="r strong pos">+{a.qty} {a.unit}</td>
-                      <td className="r">{money(a.material_cost)}</td>
-                      <td className="r">{money(a.labor_cost)}</td>
-                      <td className="r strong">{money(a.total_cost)}</td>
-                      <td className="r strong big" style={{ color: 'var(--aqua)' }}>{money(a.unit_cost)}</td>
-                      <td className="actions">
-                        <button 
-                          className="btn btn-sm btn-ghost btn-icon btn-danger" 
-                          title="Reverse Assembly" 
-                          onClick={() => handleDeleteAssembly(a)}
-                        >
-                          <Trash2 size={15} />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* BOM Recipe Editor Modal */}
-      {bomModal && selectedProduct && (
-        <Modal
-          title={`BOM Recipe & Cost: ${selectedProduct.name}`}
-          onClose={() => setBomModal(null)}
-          size="lg"
-        >
-          <form onSubmit={handleSaveBom}>
-            <p className="muted small" style={{ margin: '0 0 16px 0' }}>
-              Define the raw materials and parts consumed to make <strong>1 unit</strong> of this finished product.
-            </p>
-
-            <table className="table line-items mb">
+      <div className="card">
+        <div className="card-head"><h3><Factory size={17} /> Assemblies made</h3></div>
+        <div className="table-wrap">
+          {loading ? (
+            <Loading />
+          ) : !assemblies?.length ? (
+            <Empty title="Nothing assembled yet">
+              <button className="btn btn-sm btn-primary mt" disabled={!products} onClick={() => setOpen(true)}>
+                <Plus size={14} /> New Assembly
+              </button>
+            </Empty>
+          ) : (
+            <table className="table">
               <thead>
                 <tr>
-                  <th style={{ width: '60%' }}>Component / Raw Material</th>
-                  <th className="r" style={{ width: '30%' }}>Qty Per 1 Unit</th>
-                  <th style={{ width: '10%' }}></th>
+                  <th>Ref</th>
+                  <th>Date</th>
+                  <th>Product made</th>
+                  <th className="r">Units</th>
+                  <th className="r">Raw products</th>
+                  <th className="r">Labour + Overhead</th>
+                  <th className="r">Total</th>
+                  <th className="r">Per unit</th>
+                  <th className="actions">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {bomItems.map((item, idx) => (
-                  <tr key={idx}>
-                    <td>
-                      <select 
-                        value={item.component_id} 
-                        onChange={(e) => {
-                          const next = [...bomItems];
-                          next[idx].component_id = e.target.value;
-                          setBomItems(next);
-                        }}
-                        required
-                      >
-                        <option value="">Select component...</option>
-                        {lookups.products
-                          .filter((p) => p.id !== Number(bomModal))
-                          .map((p) => (
-                            <option key={p.id} value={p.id}>
-                              {p.name} [{p.unit}] — Current Avg Cost: {money(p.cost_price)}
-                            </option>
-                          ))}
-                      </select>
-                    </td>
-                    <td className="r">
-                      <input 
-                        type="number" 
-                        step="any" 
-                        className="num" 
-                        value={item.qty} 
-                        onChange={(e) => {
-                          const next = [...bomItems];
-                          next[idx].qty = e.target.value;
-                          setBomItems(next);
-                        }}
-                        required 
-                      />
-                    </td>
-                    <td className="c">
-                      <button 
-                        type="button" 
-                        className="btn btn-sm btn-ghost btn-icon btn-danger" 
-                        onClick={() => setBomItems(bomItems.filter((_, i) => i !== idx))}
-                      >
-                        <Trash2 size={15} />
-                      </button>
+                {assemblies.map((a) => (
+                  <tr key={a.id}>
+                    <td><span className="badge violet mono">{a.ref}</span></td>
+                    <td>{fmtDate(a.date)}</td>
+                    <td className="strong">{a.product_name}</td>
+                    <td className="r pos strong">+{a.qty} {a.unit}</td>
+                    <td className="r">{money(a.material_cost)}</td>
+                    <td className="r">{money(a.labor_cost + a.other_cost)}</td>
+                    <td className="r strong">{money(a.total_cost)}</td>
+                    <td className="r strong">{money(a.unit_cost)}</td>
+                    <td className="actions">
+                      <button className="btn btn-sm btn-ghost btn-icon" title="See raw products used" onClick={() => setViewId(a.id)}><Eye size={14} /></button>
+                      <button className="btn btn-sm btn-ghost btn-icon btn-danger" title="Reverse assembly" onClick={() => reverse(a)}><Trash2 size={14} /></button>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
+          )}
+        </div>
+      </div>
 
-            <button 
-              type="button" 
-              className="btn btn-sm btn-primary mb" 
-              onClick={() => setBomItems([...bomItems, { component_id: '', qty: 1 }])}
-            >
-              <Plus size={14} /> Add Component
-            </button>
-
-            <div className="form-grid mb" style={{ borderTop: '1px solid var(--border)', paddingTop: 16 }}>
-              <Field label="Labor Cost per Unit (Rs)">
-                <input 
-                  type="number" 
-                  step="any" 
-                  value={laborCost} 
-                  onChange={(e) => setLaborCost(e.target.value)} 
-                  placeholder="0" 
-                />
-              </Field>
-              <Field label="Overhead / Packaging Cost per Unit (Rs)">
-                <input 
-                  type="number" 
-                  step="any" 
-                  value={overheadCost} 
-                  onChange={(e) => setOverheadCost(e.target.value)} 
-                  placeholder="0" 
-                />
-              </Field>
-            </div>
-
-            <div className="modal-foot">
-              <button type="button" className="btn" onClick={() => setBomModal(null)}>Cancel</button>
-              <button type="submit" className="btn btn-primary" disabled={saving}>
-                {saving ? 'Saving...' : 'Save Recipe'}
-              </button>
-            </div>
-          </form>
-        </Modal>
+      {open && products && (
+        <AssembleModal products={products} onClose={() => setOpen(false)} onDone={() => { setOpen(false); refresh(); }} />
       )}
-
-      {/* Assemble Production Run Modal */}
-      {assembleModal && bomPreview && (
-        <Modal
-          title={`Assemble Finished Units: ${bomPreview.product.name}`}
-          onClose={() => setAssembleModal(null)}
-          size="lg"
-        >
-          <form onSubmit={handleRunAssembly}>
-            <div className="card-pad mb" style={{ background: 'var(--surface-2)', borderRadius: 'var(--radius-sm)' }}>
-              <div className="row-between">
-                <div>
-                  <span className="muted small">Max Units You Can Assemble Now:</span>
-                  <div className="strong big" style={{ color: bomPreview.max_buildable > 0 ? 'var(--green)' : 'var(--rose)' }}>
-                    {bomPreview.max_buildable} {bomPreview.product.unit}
-                  </div>
-                </div>
-                <div style={{ textAlign: 'right' }}>
-                  <span className="muted small">Finished Cost Per Unit:</span>
-                  <div className="strong big" style={{ color: 'var(--aqua)' }}>
-                    {money(bomPreview.unit_cost)}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="form-grid mb">
-              <Field label="Quantity to Assemble *">
-                <input 
-                  type="number" 
-                  step="any" 
-                  min="0.1" 
-                  max={bomPreview.max_buildable > 0 ? bomPreview.max_buildable : undefined}
-                  value={assembleQty} 
-                  onChange={(e) => handleQtyChange(e.target.value)} 
-                  required 
-                />
-              </Field>
-              <Field label="Production Date *">
-                <input type="date" value={assembleDate} onChange={(e) => setAssembleDate(e.target.value)} required />
-              </Field>
-              <Field label="Production Notes" className="full">
-                <input value={assembleNote} onChange={(e) => setAssembleNote(e.target.value)} placeholder="e.g. Batch #4 for client order" />
-              </Field>
-            </div>
-
-            {/* Component availability list */}
-            <div className="card mb" style={{ border: '1px solid var(--border)' }}>
-              <div className="card-head">
-                <h4 style={{ margin: 0, fontSize: '13px' }}>Raw Materials to be Consumed from Stock</h4>
-              </div>
-              <div className="table-wrap">
-                <table className="table compact">
-                  <thead>
-                    <tr>
-                      <th>Component</th>
-                      <th className="r">Available Stock</th>
-                      <th className="r">Required for Run</th>
-                      <th className="r">Material Cost</th>
-                      <th className="c">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {bomPreview.items?.map((it) => (
-                      <tr key={it.component_id}>
-                        <td>{it.component_name}</td>
-                        <td className="r strong">{it.stock} {it.unit}</td>
-                        <td className="r strong" style={{ color: it.sufficient ? 'var(--text)' : 'var(--rose)' }}>
-                          {it.required} {it.unit}
-                        </td>
-                        <td className="r">{money(it.line_cost)}</td>
-                        <td className="c">
-                          {it.sufficient ? (
-                            <span className="badge green">Sufficient</span>
-                          ) : (
-                            <span className="badge rose">Insufficient</span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            {/* Total Run Cost summary */}
-            <div className="summary-box mb">
-              <div className="summary-line">
-                <span>Material Cost Total:</span>
-                <b>{money(bomPreview.material_cost)}</b>
-              </div>
-              <div className="summary-line">
-                <span>Labor Cost Total:</span>
-                <b>{money(bomPreview.labor_cost)}</b>
-              </div>
-              <div className="summary-line">
-                <span>Overhead / Tools Total:</span>
-                <b>{money(bomPreview.other_cost)}</b>
-              </div>
-              <div className="summary-line total">
-                <span>Total Production Cost:</span>
-                <b>{money(bomPreview.total_cost)}</b>
-              </div>
-            </div>
-
-            <div className="modal-foot">
-              <button type="button" className="btn" onClick={() => setAssembleModal(null)}>Cancel</button>
-              <button 
-                type="submit" 
-                className="btn btn-primary" 
-                disabled={saving || bomPreview.max_buildable < assembleQty}
-              >
-                {saving ? 'Processing...' : 'Complete Assembly & Update Stock'}
-              </button>
-            </div>
-          </form>
-        </Modal>
-      )}
+      {viewId && <AssemblyDetail id={viewId} onClose={() => setViewId(null)} />}
     </div>
   );
 }

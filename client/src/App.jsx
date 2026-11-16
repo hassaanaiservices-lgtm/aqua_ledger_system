@@ -28,7 +28,7 @@ const NAV_ITEMS = [
   { id: 'vendors', label: 'Vendor Ledger', icon: Truck },
   { id: 'sales', label: 'Sales & Invoices', icon: ShoppingCart },
   { id: 'purchases', label: 'Purchases', icon: Truck },
-  { id: 'assembly', label: 'Assembly & BOM', icon: Factory },
+  { id: 'assembly', label: 'Assembly', icon: Factory },
   { id: 'daydiary', label: 'Day Diary & Accounts', icon: BookOpen },
   { id: 'cashledger', label: 'Cash Book Ledger', icon: ScrollText },
   { id: 'expenseledger', label: 'Expense Ledger', icon: Receipt },
