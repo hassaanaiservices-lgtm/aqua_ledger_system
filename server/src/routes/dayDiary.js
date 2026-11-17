@@ -17,9 +17,10 @@ async function stockValuationAsOf(asOfDate) {
   const rows = await all(
     `SELECT p.id, p.name, p.cost_price, p.type, p.unit,
        COALESCE((SELECT SUM(m.qty) FROM stock_movements m WHERE m.product_id = p.id AND m.date <= ?), 0) AS stock,
-       COALESCE((SELECT SUM(m.qty * m.unit_cost) / NULLIF(SUM(m.qty), 0)
+       COALESCE((SELECT CASE WHEN SUM(m.qty) > 0.000000001 AND SUM(m.qty * m.unit_cost) > 0
+                                 THEN SUM(m.qty * m.unit_cost) / SUM(m.qty) END
                  FROM stock_movements m
-                 WHERE m.product_id = p.id AND m.qty > 0 AND m.unit_cost > 0 AND m.date <= ?), p.cost_price) AS avg_cost
+                 WHERE m.product_id = p.id AND m.date <= ?), p.cost_price) AS avg_cost
      FROM products p WHERE p.active = 1`,
     asOfDate,
     asOfDate

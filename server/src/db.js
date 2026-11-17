@@ -308,6 +308,9 @@ export async function migrate() {
     await setSetting('business_tagline', 'Management System');
   }
 
+  // Re-price existing history with the date-wise moving average (no-op once correct).
+  await tx(() => recostInventory());
+
   if ((await getSetting('business_name')) == null) {
     await setSetting('business_name', 'Aqua Home Appliance');
     await setSetting('business_tagline', 'Management System');
@@ -467,18 +470,154 @@ export async function stockOf(productId) {
 }
 
 /**
- * Weighted average cost from all incoming movements (purchases, assembly output,
- * opening stock, positive adjustments). Falls back to the product's cost_price.
+ * Moving weighted-average cost of the stock on hand right now. Outgoing lines
+ * carry the average they left at (kept true by recostInventory), so stock value
+ * is simply SUM(qty * unit_cost) over every movement. Falls back to cost_price
+ * when nothing is on hand.
  */
 export async function avgCostOf(productId) {
   const row = await get(
-    `SELECT SUM(qty*unit_cost) AS v, SUM(qty) AS q FROM stock_movements
-     WHERE product_id = ? AND qty > 0 AND unit_cost > 0`,
+    'SELECT SUM(qty*unit_cost) AS v, SUM(qty) AS q FROM stock_movements WHERE product_id = ?',
     productId
   );
-  if (row && row.q > 0) return r2(row.v / row.q);
+  if (row && row.q > 1e-9 && row.v > 0) return r2(row.v / row.q);
   const p = await get('SELECT cost_price FROM products WHERE id = ?', productId);
   return p ? r2(p.cost_price) : 0;
+}
+
+const near = (a, b) => Math.abs((Number(a) || 0) - (Number(b) || 0)) < 0.005;
+
+/**
+ * Re-prices every stock movement with a perpetual moving weighted average,
+ * walking each product's movements in date order:
+ *  - purchases, opening stock, stock added with a cost: come in at their own cost
+ *  - sales, assembly consumption, stock removed: leave at the average on hand
+ *    on that date (so backdated entries are costed as of their date)
+ *  - assembly output: (materials + labour + other) / qty, recomputed from the
+ *    re-priced materials, then fed into the finished product's own average
+ *  - sales returns of a known invoice: come back at that invoice's cost
+ * Sale costs (sale_items, sales.cost_total) and assembly costs follow. Only
+ * rows whose cost actually changed are written. Call inside the same tx as the
+ * stock change.
+ */
+export async function recostInventory() {
+  const moves = await all(
+    'SELECT id, product_id, date, qty, unit_cost, ref_type, ref_id FROM stock_movements ORDER BY product_id, date, id'
+  );
+  if (!moves.length) return 0;
+  const costPrice = new Map((await all('SELECT id, cost_price FROM products')).map((p) => [p.id, p.cost_price]));
+  const asms = new Map(
+    (await all('SELECT id, qty, labor_cost, other_cost, material_cost, total_cost, unit_cost FROM assemblies')).map((a) => [a.id, { ...a, items: [] }])
+  );
+  for (const it of await all('SELECT id, assembly_id, component_id, qty, unit_cost, line_total FROM assembly_items')) {
+    asms.get(it.assembly_id)?.items.push(it);
+  }
+  const sales = await all('SELECT id, total, cost_total, note FROM sales');
+  const saleItems = await all('SELECT id, sale_id, product_id, qty, unit_cost FROM sale_items');
+
+  const before = new Map(moves.map((m) => [m.id, m.unit_cost]));
+  const byProduct = new Map();
+  for (const m of moves) {
+    if (!byProduct.has(m.product_id)) byProduct.set(m.product_id, []);
+    byProduct.get(m.product_id).push(m);
+  }
+  const index = new Map();
+  for (const m of moves) {
+    const key = `${m.ref_type}:${m.ref_id}:${m.product_id}`;
+    if (!index.has(key)) index.set(key, m);
+  }
+  const outOf = (refType, refId, productId) => {
+    const m = index.get(`${refType}:${refId}:${productId}`);
+    return m && m.qty < 0 ? m : undefined;
+  };
+
+  // Sales returns point at their invoice only through the note ("Return of INV-00012").
+  const invoiceId = new Map(sales.filter((s) => s.total >= 0).map((s) => [docNo.sale(s.id), s.id]));
+  const returnOf = new Map();
+  for (const s of sales) {
+    const ref = s.total < 0 && /Return of (INV-\d+)/.exec(s.note || '')?.[1];
+    if (ref && invoiceId.has(ref)) returnOf.set(s.id, invoiceId.get(ref));
+  }
+
+  // Assembly output depends on component costs, and components can themselves be
+  // assembled, so repeat until the assembly costs stop moving.
+  for (let pass = 0; pass < 25; pass++) {
+    for (const [pid, list] of byProduct) {
+      let q = 0;
+      let v = 0;
+      let last = costPrice.get(pid) || 0;
+      for (const m of list) {
+        const avg = q > 1e-9 && v > 0 ? v / q : last;
+        if (m.qty < 0 && ['sale', 'assembly_out', 'adjustment'].includes(m.ref_type)) {
+          m.unit_cost = r2(avg);
+        } else if (m.ref_type === 'assembly_in') {
+          const a = asms.get(m.ref_id);
+          if (a) m.unit_cost = a.unit_cost;
+        } else if (m.qty > 0 && m.ref_type === 'sale') {
+          const orig = returnOf.has(m.ref_id) && outOf('sale', returnOf.get(m.ref_id), pid);
+          if (orig) m.unit_cost = orig.unit_cost;
+        } else if (m.qty > 0 && ['opening', 'adjustment'].includes(m.ref_type) && !(before.get(m.id) > 0)) {
+          m.unit_cost = r2(avg); // no cost given: value it at the going average
+        }
+        q += m.qty;
+        v += m.qty * m.unit_cost;
+        if (q > 1e-9 && v > 0) last = v / q;
+      }
+    }
+
+    let moved = false;
+    for (const a of asms.values()) {
+      let material = 0;
+      for (const it of a.items) {
+        const out = outOf('assembly_out', a.id, it.component_id);
+        if (out) it.unit_cost = out.unit_cost;
+        it.line_total = r2(it.unit_cost * it.qty);
+        material += it.line_total;
+      }
+      a.material_cost = r2(material);
+      a.total_cost = r2(a.material_cost + a.labor_cost + a.other_cost);
+      const unit = a.qty > 0 ? r2(a.total_cost / a.qty) : 0;
+      if (!near(unit, a.unit_cost)) moved = true;
+      a.unit_cost = unit;
+    }
+    if (!moved && pass > 0) break;
+  }
+
+  let changes = 0;
+  for (const m of moves) {
+    if (!near(m.unit_cost, before.get(m.id))) {
+      await run('UPDATE stock_movements SET unit_cost = ? WHERE id = ?', m.unit_cost, m.id);
+      changes++;
+    }
+  }
+  const saleCost = new Map();
+  for (const it of saleItems) {
+    const mv = index.get(`sale:${it.sale_id}:${it.product_id}`);
+    const cost = mv ? mv.unit_cost : it.unit_cost;
+    if (!near(cost, it.unit_cost)) await run('UPDATE sale_items SET unit_cost = ? WHERE id = ?', cost, it.id);
+    saleCost.set(it.sale_id, (saleCost.get(it.sale_id) || 0) + cost * it.qty);
+  }
+  for (const s of sales) {
+    const cost = r2(saleCost.get(s.id) || 0);
+    if (!near(cost, s.cost_total)) await run('UPDATE sales SET cost_total = ? WHERE id = ?', cost, s.id);
+  }
+  const oldAsm = new Map(
+    (await all('SELECT id, material_cost, total_cost, unit_cost FROM assemblies')).map((a) => [a.id, a])
+  );
+  const oldItem = new Map((await all('SELECT id, unit_cost, line_total FROM assembly_items')).map((i) => [i.id, i]));
+  for (const a of asms.values()) {
+    const o = oldAsm.get(a.id);
+    if (!near(o.material_cost, a.material_cost) || !near(o.total_cost, a.total_cost) || !near(o.unit_cost, a.unit_cost)) {
+      await run('UPDATE assemblies SET material_cost=?, total_cost=?, unit_cost=? WHERE id=?', a.material_cost, a.total_cost, a.unit_cost, a.id);
+    }
+    for (const it of a.items) {
+      const oi = oldItem.get(it.id);
+      if (!near(oi.unit_cost, it.unit_cost) || !near(oi.line_total, it.line_total)) {
+        await run('UPDATE assembly_items SET unit_cost=?, line_total=? WHERE id=?', it.unit_cost, it.line_total, it.id);
+      }
+    }
+  }
+  return changes;
 }
 
 // Pictures are deliberately not selected here: a few dozen of them would push
@@ -490,8 +629,8 @@ export const PRODUCT_STOCK_SQL = `
     (p.image IS NOT NULL AND p.image <> '') AS has_image,
     COALESCE((SELECT SUM(qty) FROM stock_movements m WHERE m.product_id = p.id),0) AS stock,
     COALESCE((SELECT SUM(qty) FROM stock_movements m WHERE m.product_id = p.id AND m.ref_type = 'opening'),0) AS opening_stock,
-    COALESCE((SELECT SUM(qty*unit_cost)/NULLIF(SUM(qty),0) FROM stock_movements m
-              WHERE m.product_id = p.id AND qty > 0 AND unit_cost > 0), p.cost_price) AS avg_cost
+    COALESCE((SELECT CASE WHEN SUM(qty) > 0.000000001 AND SUM(qty*unit_cost) > 0 THEN SUM(qty*unit_cost)/SUM(qty) END
+              FROM stock_movements m WHERE m.product_id = p.id), p.cost_price) AS avg_cost
   FROM products p`;
 
 export async function customerBalance(id) {

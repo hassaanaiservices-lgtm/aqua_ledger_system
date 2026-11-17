@@ -1,6 +1,6 @@
 // Products, stock levels, stock movements and manual adjustments.
 import { Router } from 'express';
-import { all, get, run, tx, r2, stockOf, avgCostOf, PRODUCT_STOCK_SQL, cleanImage } from '../db.js';
+import { all, get, run, tx, r2, stockOf, avgCostOf, recostInventory, PRODUCT_STOCK_SQL, cleanImage } from '../db.js';
 import { h, bad, notFound, num, str, today } from '../utils.js';
 
 const r = Router();
@@ -105,6 +105,7 @@ r.post(
           opening,
           num(b.cost_price)
         );
+        await recostInventory();
       }
       return { id };
     });
@@ -129,6 +130,7 @@ r.put(
             req.params.id, first?.d || today(), qty, num(b.cost_price)
           );
         }
+        await recostInventory();
       });
     }
     await run(
@@ -200,15 +202,18 @@ r.post(
     if (!qty) throw bad('Quantity cannot be zero');
     if (qty < 0 && await stockOf(pid) + qty < 0) throw bad(`Not enough stock. Available: ${await stockOf(pid)}`);
     const unitCost = qty > 0 ? num(b.unit_cost) || await avgCostOf(pid) : await avgCostOf(pid);
-    const info = await run(
-      `INSERT INTO stock_movements (product_id,date,qty,unit_cost,ref_type,note) VALUES (?,?,?,?, 'adjustment', ?)`,
-      pid,
-      str(b.date) || today(),
-      qty,
-      unitCost,
-      str(b.note) || (qty > 0 ? 'Stock added' : 'Stock removed')
-    );
-    return { id: Number(info.lastInsertRowid) };
+    return await tx(async () => {
+      const info = await run(
+        `INSERT INTO stock_movements (product_id,date,qty,unit_cost,ref_type,note) VALUES (?,?,?,?, 'adjustment', ?)`,
+        pid,
+        str(b.date) || today(),
+        qty,
+        unitCost,
+        str(b.note) || (qty > 0 ? 'Stock added' : 'Stock removed')
+      );
+      await recostInventory();
+      return { id: Number(info.lastInsertRowid) };
+    });
   })
 );
 
@@ -220,7 +225,10 @@ r.delete(
     if (!['adjustment', 'opening'].includes(m.ref_type))
       throw bad('This movement belongs to a document. Delete the sale/purchase/assembly instead.');
     if (m.qty > 0 && await stockOf(m.product_id) - m.qty < 0) throw bad('Deleting this would make stock negative');
-    await run('DELETE FROM stock_movements WHERE id = ?', m.id);
+    await tx(async () => {
+      await run('DELETE FROM stock_movements WHERE id = ?', m.id);
+      await recostInventory();
+    });
     return { ok: true };
   })
 );
@@ -247,7 +255,11 @@ r.get(
 r.delete(
   '/opening-stock',
   h(async () => {
-    const res = await run("DELETE FROM stock_movements WHERE ref_type = 'opening'");
+    const res = await tx(async () => {
+      const out = await run("DELETE FROM stock_movements WHERE ref_type = 'opening'");
+      await recostInventory();
+      return out;
+    });
     return { ok: true, deleted: res.changes };
   })
 );

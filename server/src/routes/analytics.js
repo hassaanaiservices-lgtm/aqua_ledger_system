@@ -177,6 +177,13 @@ async function periodTotals(from, to) {
     from,
     to
   )).t;
+  const cb = await get(
+    `SELECT COALESCE(SUM(CASE WHEN kind='income' THEN amount END),0) income,
+            COALESCE(SUM(CASE WHEN kind='bank_charge' THEN amount END),0) charges
+     FROM cash_book WHERE date BETWEEN ? AND ?`,
+    from,
+    to
+  );
   const gross = s.total - s.cost;
   return {
     sales: r2(s.total),
@@ -196,7 +203,10 @@ async function periodTotals(from, to) {
     received: r2(pin),
     paid: r2(pout),
     // Assembly labor/other are capitalised into product cost, so they hit P&L via COGS when sold.
-    net_profit: r2(gross - e.total),
+    other_income: r2(cb.income),
+    bank_charges: r2(cb.charges),
+    // Same formula as the Day Diary P&L, so both screens show one net profit.
+    net_profit: r2(gross + cb.income - e.total - cb.charges),
     cash_flow: r2(pin - pout - e.total),
   };
 }
@@ -640,7 +650,9 @@ const REPORTS = {
       { section: 'Revenue', item: 'Sales', amount: t.sales },
       { section: 'Cost of Goods Sold', item: 'Cost of items sold', amount: -t.cogs },
       { section: 'Gross Profit', item: '', amount: t.gross_profit },
+      ...(t.other_income ? [{ section: 'Other Income', item: 'Other income (cash book)', amount: t.other_income }] : []),
       ...cats.map((c) => ({ section: 'Expenses', item: c.category, amount: -r2(c.amount) })),
+      ...(t.bank_charges ? [{ section: 'Expenses', item: 'Bank charges (cash book)', amount: -t.bank_charges }] : []),
       { section: 'Net Profit', item: '', amount: t.net_profit },
     ];
     return {

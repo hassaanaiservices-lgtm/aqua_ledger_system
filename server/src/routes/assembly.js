@@ -2,7 +2,7 @@
 // Assembly consumes component stock at current average cost and produces
 // finished stock whose unit cost = (materials + labor + other) / qty.
 import { Router } from 'express';
-import { all, get, run, tx, r2, stockOf, avgCostOf, docNo } from '../db.js';
+import { all, get, run, tx, r2, stockOf, avgCostOf, recostInventory, docNo } from '../db.js';
 import { h, bad, notFound, num, str, today } from '../utils.js';
 
 const r = Router();
@@ -216,7 +216,9 @@ r.post(
         id,
         `Assembled on ${docNo.assembly(id)}`
       );
-      return { id, ref: docNo.assembly(id), material_cost: material, total_cost: total, unit_cost: unit };
+      await recostInventory();
+      const done = await get('SELECT material_cost, total_cost, unit_cost FROM assemblies WHERE id = ?', id);
+      return { id, ref: docNo.assembly(id), ...done };
     });
   })
 );
@@ -232,6 +234,7 @@ r.delete(
       await run(`DELETE FROM stock_movements WHERE ref_type IN ('assembly_in','assembly_out') AND ref_id = ?`, a.id);
       await run('DELETE FROM assembly_items WHERE assembly_id = ?', a.id);
       await run('DELETE FROM assemblies WHERE id = ?', a.id);
+      await recostInventory();
     });
     return { ok: true };
   })

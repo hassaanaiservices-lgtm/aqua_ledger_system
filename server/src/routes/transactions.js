@@ -1,7 +1,7 @@
 // Sales, purchases and expenses. Sales/purchases automatically write stock
 // movements and (optionally) a linked payment, all inside one transaction.
 import { Router } from 'express';
-import { all, get, run, tx, r2, stockOf, avgCostOf, docNo, saleNo, purchaseNo, getSetting, EXPENSE_GROUPS, normalizeMethod, requireBankAccountId } from '../db.js';
+import { all, get, run, tx, r2, stockOf, avgCostOf, recostInventory, docNo, saleNo, purchaseNo, getSetting, EXPENSE_GROUPS, normalizeMethod, requireBankAccountId } from '../db.js';
 import { h, bad, notFound, num, str, today } from '../utils.js';
 import { buildLedger } from './parties.js';
 
@@ -163,6 +163,7 @@ r.post(
           'Paid at time of sale'
         );
       }
+      await recostInventory();
       return { id, invoice_no: docNo.sale(id) };
     });
   })
@@ -228,7 +229,9 @@ r.patch(
           'UPDATE sales SET customer_id=?, date=?, subtotal=?, discount=?, tax=?, total=?, cost_total=?, note=? WHERE id=?',
           customerId, date, subtotal, discount, tax, total, r2(costTotal), note, s.id
         );
-        await run('UPDATE payments SET date = ? WHERE sale_id = ?', date, s.id);
+        // A payment made with the invoice belongs to whoever the invoice now names.
+        await run('UPDATE payments SET date = ?, party_id = ? WHERE sale_id = ?', date, customerId, s.id);
+        await recostInventory();
         return { ok: true, id: s.id, invoice_no: docNo.sale(s.id) };
       });
     }
@@ -239,6 +242,7 @@ r.patch(
       await run('UPDATE sales SET date = ?, note = ? WHERE id = ?', date, note, s.id);
       await run(`UPDATE stock_movements SET date = ? WHERE ref_type = 'sale' AND ref_id = ?`, date, s.id);
       await run('UPDATE payments SET date = ? WHERE sale_id = ?', date, s.id);
+      await recostInventory();
       return { ok: true, id: s.id };
     });
   })
@@ -262,6 +266,7 @@ r.delete(
       await run('DELETE FROM payments WHERE sale_id = ?', s.id);
       await run('DELETE FROM sale_items WHERE sale_id = ?', s.id);
       await run('DELETE FROM sales WHERE id = ?', s.id);
+      await recostInventory();
     });
     return { ok: true };
   })
@@ -378,6 +383,7 @@ r.post(
           'Paid at time of purchase'
         );
       }
+      await recostInventory();
       return { id, purchase_no: docNo.purchase(id) };
     });
   })
@@ -442,7 +448,8 @@ r.patch(
           'UPDATE purchases SET vendor_id=?, date=?, vendor_bill_no=?, subtotal=?, discount=?, tax=?, total=?, note=? WHERE id=?',
           vendorId, date, billNo, subtotal, discount, tax, total, note, p.id
         );
-        await run('UPDATE payments SET date = ? WHERE purchase_id = ?', date, p.id);
+        await run('UPDATE payments SET date = ?, party_id = ? WHERE purchase_id = ?', date, vendorId, p.id);
+        await recostInventory();
         return { ok: true, id: p.id, purchase_no: docNo.purchase(p.id) };
       });
     }
@@ -454,6 +461,7 @@ r.patch(
       await run('UPDATE purchases SET date = ?, vendor_bill_no = ?, note = ? WHERE id = ?', date, billNo, note, p.id);
       await run(`UPDATE stock_movements SET date = ? WHERE ref_type = 'purchase' AND ref_id = ?`, date, p.id);
       await run('UPDATE payments SET date = ? WHERE purchase_id = ?', date, p.id);
+      await recostInventory();
       return { ok: true, id: p.id };
     });
   })
@@ -476,6 +484,7 @@ r.delete(
       await run('DELETE FROM payments WHERE purchase_id = ?', p.id);
       await run('DELETE FROM purchase_items WHERE purchase_id = ?', p.id);
       await run('DELETE FROM purchases WHERE id = ?', p.id);
+      await recostInventory();
     });
     return { ok: true };
   })
@@ -487,7 +496,7 @@ r.delete(
 // the customer owes less, and revenue and cost of goods both go down. A purchase
 // return mirrors it for vendors. Picking the original document fixes the price
 // and cost to what was really charged and limits the quantity to what it had.
-async function cleanReturnItems(items, original, originalItems, priceKey, label) {
+async function cleanReturnItems(items, original, originalItems, priceKey, label, returned = {}) {
   if (!Array.isArray(items) || !items.length) throw bad('Add at least one item to return');
   const rows = [];
   for (const [i, it] of items.entries()) {
@@ -500,12 +509,26 @@ async function cleanReturnItems(items, original, originalItems, priceKey, label)
     if (original) {
       const had = originalItems.filter((x) => x.product_id === product.id).reduce((t, x) => t + x.qty, 0);
       if (!had) throw bad(`"${product.name}" is not on ${label}`);
-      if (qty > had + 1e-9) throw bad(`"${product.name}": only ${r2(had)} on ${label}, cannot return ${qty}`);
+      const left = had - (returned[product.id] || 0);
+      if (qty > left + 1e-9)
+        throw bad(`"${product.name}": ${r2(had)} on ${label}, ${r2(had - left)} already returned, cannot return ${qty} more`);
     }
     rows.push({ product, qty, price, line: r2(qty * price) });
   }
   if (!rows.length) throw bad('Enter a quantity for at least one item');
   return rows;
+}
+
+/** Quantity per product already returned against a document (returns name it in their note). */
+async function alreadyReturned(table, itemTable, fk, ref) {
+  const out = {};
+  const rows = await all(
+    `SELECT i.product_id, -SUM(i.qty) AS q FROM ${itemTable} i JOIN ${table} d ON d.id = i.${fk}
+     WHERE d.total < 0 AND (d.note = ? OR d.note LIKE ?) GROUP BY i.product_id`,
+    `Return of ${ref}`, `Return of ${ref} · %`
+  );
+  for (const row of rows) out[row.product_id] = row.q;
+  return out;
 }
 
 r.post(
@@ -518,7 +541,8 @@ r.post(
     if (b.sale_id && !original) throw bad('Original invoice not found');
     if (original && original.customer_id !== customerId) throw bad('That invoice belongs to another customer');
     const originalItems = original ? await all('SELECT * FROM sale_items WHERE sale_id = ?', original.id) : [];
-    const items = await cleanReturnItems(b.items, original, originalItems, 'unit_price', original && docNo.sale(original.id));
+    const returned = original ? await alreadyReturned('sales', 'sale_items', 'sale_id', docNo.sale(original.id)) : {};
+    const items = await cleanReturnItems(b.items, original, originalItems, 'unit_price', original && docNo.sale(original.id), returned);
     const date = str(b.date) || today();
     const total = r2(items.reduce((a, i) => a + i.line, 0));
     const note = [original && `Return of ${docNo.sale(original.id)}`, str(b.note)].filter(Boolean).join(' · ') || null;
@@ -544,6 +568,7 @@ r.post(
         );
       }
       await run('UPDATE sales SET cost_total = ? WHERE id = ?', -r2(cost), id);
+      await recostInventory();
       return { id, invoice_no: docNo.saleReturn(id) };
     });
   })
@@ -559,7 +584,8 @@ r.post(
     if (b.purchase_id && !original) throw bad('Original purchase bill not found');
     if (original && original.vendor_id !== vendorId) throw bad('That bill belongs to another vendor');
     const originalItems = original ? await all('SELECT * FROM purchase_items WHERE purchase_id = ?', original.id) : [];
-    const items = await cleanReturnItems(b.items, original, originalItems, 'unit_cost', original && docNo.purchase(original.id));
+    const returned = original ? await alreadyReturned('purchases', 'purchase_items', 'purchase_id', docNo.purchase(original.id)) : {};
+    const items = await cleanReturnItems(b.items, original, originalItems, 'unit_cost', original && docNo.purchase(original.id), returned);
 
     const need = {};
     for (const it of items) need[it.product.id] = (need[it.product.id] || 0) + it.qty;
@@ -573,6 +599,12 @@ r.post(
     const date = str(b.date) || today();
     const total = r2(items.reduce((a, i) => a + i.line, 0));
     const note = [original && `Return of ${docNo.purchase(original.id)}`, str(b.note)].filter(Boolean).join(' · ') || null;
+    // Stock leaves at what it cost when it came in (after the bill's discount/tax).
+    const landed = {};
+    if (original) {
+      for (const m of await all(`SELECT product_id, unit_cost FROM stock_movements WHERE ref_type = 'purchase' AND ref_id = ? AND qty > 0`, original.id))
+        landed[m.product_id] ??= m.unit_cost;
+    }
 
     return await tx(async () => {
       const info = await run(
@@ -587,9 +619,10 @@ r.post(
         );
         await run(
           `INSERT INTO stock_movements (product_id,date,qty,unit_cost,ref_type,ref_id,note) VALUES (?,?,?,?, 'purchase', ?, ?)`,
-          it.product.id, date, -it.qty, it.price, id, `Returned on ${docNo.purchaseReturn(id)}`
+          it.product.id, date, -it.qty, landed[it.product.id] ?? it.price, id, `Returned on ${docNo.purchaseReturn(id)}`
         );
       }
+      await recostInventory();
       return { id, purchase_no: docNo.purchaseReturn(id) };
     });
   })
