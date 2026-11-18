@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Factory, Plus, Trash2, Eye } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Factory, Plus, Trash2, Eye, Pencil } from 'lucide-react';
 import { useApp, useFetch, PageHeader, Modal, Field, Loading, Empty, useSaver } from '../components/ui';
 import { money, fmtDate, today } from '../lib/format';
 import { api } from '../lib/api';
@@ -12,7 +12,7 @@ const blankRow = () => ({ component_id: '', qty: 1 });
  * leave stock, the finished machines enter stock at the full cost, and the
  * parts list is remembered as that machine's recipe for next time.
  */
-function AssembleModal({ products, onClose, onDone }) {
+function AssembleModal({ products, editId, onClose, onDone }) {
   const [runSave, saving] = useSaver();
   const { toast } = useApp();
   const [productId, setProductId] = useState('');
@@ -23,6 +23,32 @@ function AssembleModal({ products, onClose, onDone }) {
   const [overhead, setOverhead] = useState(0);
   const [note, setNote] = useState('');
   const [remember, setRemember] = useState(true);
+  const [loadingEdit, setLoadingEdit] = useState(Boolean(editId));
+  const [oldUsed, setOldUsed] = useState({});
+  const [editRef, setEditRef] = useState('');
+
+  // Editing: fill the form from the saved run, per unit, as it was entered.
+  useEffect(() => {
+    if (!editId) return;
+    api.get(`/assemblies/${editId}`).then((a) => {
+      const n = a.qty || 1;
+      setProductId(String(a.product_id));
+      setQty(a.qty);
+      setDate(a.date);
+      setNote(a.note || '');
+      setLabor(+(a.labor_cost / n).toFixed(2));
+      setOverhead(+(a.other_cost / n).toFixed(2));
+      setItems(a.items.map((it) => ({ component_id: it.component_id, qty: +(it.qty / n).toFixed(4) })));
+      const used = {};
+      for (const it of a.items) used[it.component_id] = (used[it.component_id] || 0) + it.qty;
+      setOldUsed(used);
+      setEditRef(a.ref);
+      setLoadingEdit(false);
+    }).catch((err) => toast(err.message, 'error'));
+  }, [editId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Parts this run already took out of stock come back if it is edited.
+  const available = (p) => (p ? p.stock + (oldUsed[p.id] || 0) : 0);
 
   const byId = new Map(products.map((p) => [p.id, p]));
   const finished = products.filter((p) => p.type === 'finished');
@@ -51,7 +77,7 @@ function AssembleModal({ products, onClose, onDone }) {
       const p = byId.get(Number(r.component_id));
       const perUnit = Number(r.qty) || 0;
       const needed = perUnit * units;
-      return { ...r, p, perUnit, needed, cost: needed * (p?.avg_cost || 0), short: p ? needed > p.stock + 1e-9 : false };
+      return { ...r, p, perUnit, needed, cost: needed * (p?.avg_cost || 0), short: p ? needed > available(p) + 1e-9 : false };
     });
   const materialCost = rows.reduce((t, r) => t + r.cost, 0);
   const laborTotal = (Number(labor) || 0) * units;
@@ -72,7 +98,7 @@ function AssembleModal({ products, onClose, onDone }) {
     }
 
     await runSave(async () => {
-      const res = await api.post('/assemblies', {
+      const res = await (editId ? (body) => api.patch(`/assemblies/${editId}`, body) : (body) => api.post('/assemblies', body))({
         product_id: Number(productId),
         qty: units,
         date,
@@ -88,7 +114,7 @@ function AssembleModal({ products, onClose, onDone }) {
           overhead_cost: Number(overhead) || 0,
         });
       }
-      toast(`${res.ref}: ${units} × ${target?.name} added to stock at ${money(res.unit_cost)} each`);
+      toast(editId ? `${res.ref} updated — ${units} × ${target?.name} at ${money(res.unit_cost)} each` : `${res.ref}: ${units} × ${target?.name} added to stock at ${money(res.unit_cost)} each`);
       onDone();
     });
   };
@@ -98,13 +124,14 @@ function AssembleModal({ products, onClose, onDone }) {
   );
 
   return (
-    <Modal title="Assemble a Product" icon={<Factory size={18} />} size="xl" onClose={onClose}
+    <Modal title={editId ? `Edit Assembly ${editRef}` : 'Assemble a Product'} icon={<Factory size={18} />} size="xl" onClose={onClose}
       footer={<>
         <button className="btn" type="button" onClick={onClose}>Cancel</button>
         <button className="btn btn-primary" type="button" disabled={saving || anyShort} onClick={submit}>
-          {saving ? 'Assembling…' : `Assemble ${units || ''} ${target ? target.unit : ''}`}
+          {saving ? 'Saving…' : editId ? 'Save Changes' : `Assemble ${units || ''} ${target ? target.unit : ''}`}
         </button>
       </>}>
+      {loadingEdit ? <Loading /> : (
       <form onSubmit={submit}>
         <h4 style={{ margin: '0 0 10px' }}>1. What are you making?</h4>
         <div className="form-grid mb">
@@ -140,7 +167,7 @@ function AssembleModal({ products, onClose, onDone }) {
               {items.map((r, i) => {
                 const p = byId.get(Number(r.component_id));
                 const needed = (Number(r.qty) || 0) * units;
-                const short = p ? needed > p.stock + 1e-9 : false;
+                const short = p ? needed > available(p) + 1e-9 : false;
                 return (
                   <tr key={i}>
                     <td>
@@ -155,7 +182,7 @@ function AssembleModal({ products, onClose, onDone }) {
                       <input type="number" min="0" step="any" className="num" value={r.qty} onChange={(e) => setRow(i, { qty: e.target.value })} />
                     </td>
                     <td className="r strong">{p ? `${needed} ${p.unit}` : '—'}</td>
-                    <td className={`r ${short ? 'neg strong' : 'muted'}`}>{p ? `${p.stock} ${p.unit}` : '—'}{short && ' — not enough'}</td>
+                    <td className={`r ${short ? 'neg strong' : 'muted'}`}>{p ? `${available(p)} ${p.unit}` : '—'}{short && ' — not enough'}</td>
                     <td className="r">{p ? money(needed * p.avg_cost) : '—'}</td>
                     <td className="c">
                       <button type="button" className="btn btn-sm btn-ghost btn-icon btn-danger" title="Remove" disabled={items.length === 1} onClick={() => setItems(items.filter((_, j) => j !== i))}>
@@ -208,6 +235,7 @@ function AssembleModal({ products, onClose, onDone }) {
         </label>
         {anyShort && <p className="neg small" style={{ marginBottom: 0 }}>Some raw products are not in stock. Purchase them first or lower the quantity.</p>}
       </form>
+      )}
     </Modal>
   );
 }
@@ -250,6 +278,7 @@ export default function Assembly() {
   const { confirm, loadLookups } = useApp();
   const [runSave] = useSaver();
   const [open, setOpen] = useState(false);
+  const [editId, setEditId] = useState(null);
   const [viewId, setViewId] = useState(null);
   const { data: products, reload: reloadProducts } = useFetch('/products');
   const { data: assemblies, loading, reload } = useFetch('/assemblies');
@@ -320,6 +349,7 @@ export default function Assembly() {
                     <td className="r strong">{money(a.unit_cost)}</td>
                     <td className="actions">
                       <button className="btn btn-sm btn-ghost btn-icon" title="See raw products used" onClick={() => setViewId(a.id)}><Eye size={14} /></button>
+                      <button className="btn btn-sm btn-ghost btn-icon" title="Edit assembly" onClick={() => setEditId(a.id)}><Pencil size={14} /></button>
                       <button className="btn btn-sm btn-ghost btn-icon btn-danger" title="Reverse assembly" onClick={() => reverse(a)}><Trash2 size={14} /></button>
                     </td>
                   </tr>
@@ -330,8 +360,14 @@ export default function Assembly() {
         </div>
       </div>
 
-      {open && products && (
-        <AssembleModal products={products} onClose={() => setOpen(false)} onDone={() => { setOpen(false); refresh(); }} />
+      {(open || editId) && products && (
+        <AssembleModal
+          key={editId || 'new'}
+          products={products}
+          editId={editId}
+          onClose={() => { setOpen(false); setEditId(null); }}
+          onDone={() => { setOpen(false); setEditId(null); refresh(); }}
+        />
       )}
       {viewId && <AssemblyDetail id={viewId} onClose={() => setViewId(null)} />}
     </div>

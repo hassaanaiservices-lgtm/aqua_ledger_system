@@ -136,90 +136,103 @@ r.get(
   })
 );
 
-r.post(
-  '/assemblies',
-  h(async (req) => {
-    const b = req.body;
-    const pid = num(b.product_id);
-    const qty = num(b.qty);
-    if (qty <= 0) throw bad('Quantity must be greater than zero');
-    const est = await bomFor(pid, qty);
+/**
+ * Creates an assembly, or rewrites `existing` in place. On an edit the parts the
+ * old run used count as available again, and the machines it made must still
+ * be in stock if fewer (or a different product) are made now.
+ */
+async function writeAssembly(b, existing = null) {
+  const pid = num(b.product_id ?? existing?.product_id);
+  const qty = num(b.qty ?? existing?.qty);
+  if (qty <= 0) throw bad('Quantity must be greater than zero');
+  const est = await bomFor(pid, qty);
 
-    // Components: custom list from the form, or the saved BOM scaled by qty.
-    let comps = Array.isArray(b.items) && b.items.length
-      ? b.items.map((it) => ({ component_id: num(it.component_id), required: num(it.qty) }))
-      : est.items.map((i) => ({ component_id: i.component_id, required: i.required }));
-    comps = comps.filter((c) => c.required > 0);
-    if (!comps.length) throw bad('No components defined. Set up the recipe (BOM) first or add components.');
+  // Components: custom list from the form, or the saved BOM scaled by qty.
+  let comps = Array.isArray(b.items) && b.items.length
+    ? b.items.map((it) => ({ component_id: num(it.component_id), required: num(it.qty) }))
+    : est.items.map((i) => ({ component_id: i.component_id, required: i.required }));
+  comps = comps.filter((c) => c.required > 0);
+  if (!comps.length) throw bad('No components defined. Set up the recipe (BOM) first or add components.');
 
-    const need = {};
-    for (const c of comps) {
-      if (c.component_id === pid) throw bad('A product cannot consume itself');
-      need[c.component_id] = (need[c.component_id] || 0) + c.required;
+  const oldUsed = {};
+  if (existing) {
+    for (const it of await all('SELECT component_id, SUM(qty) q FROM assembly_items WHERE assembly_id = ? GROUP BY component_id', existing.id))
+      oldUsed[it.component_id] = it.q;
+    const left = (await stockOf(existing.product_id)) - existing.qty + (pid === existing.product_id ? qty : 0);
+    if (left < -0.0001) throw bad('Cannot change: units from this assembly have already been sold or used.');
+  }
+
+  const need = {};
+  for (const c of comps) {
+    if (c.component_id === pid) throw bad('A product cannot consume itself');
+    need[c.component_id] = (need[c.component_id] || 0) + c.required;
+  }
+  for (const [cid, q] of Object.entries(need)) {
+    const have = (await stockOf(cid)) + (oldUsed[cid] || 0);
+    if (have + 1e-9 < q) {
+      const c = await get('SELECT name, unit FROM products WHERE id = ?', cid);
+      throw bad(`Not enough "${c.name}". Available: ${r2(have)} ${c.unit}, required: ${r2(q)}`);
     }
-    for (const [cid, q] of Object.entries(need)) {
-      const have = await stockOf(cid);
-      if (have + 1e-9 < q) {
-        const c = await get('SELECT name, unit FROM products WHERE id = ?', cid);
-        throw bad(`Not enough "${c.name}". Available: ${r2(have)} ${c.unit}, required: ${r2(q)}`);
-      }
-    }
+  }
 
-    const date = str(b.date) || today();
-    const labor = b.labor_cost != null && b.labor_cost !== '' ? r2(b.labor_cost) : est.labor_cost;
-    const other = b.other_cost != null && b.other_cost !== '' ? r2(b.other_cost) : est.other_cost;
+  const date = str(b.date) || existing?.date || today();
+  const labor = b.labor_cost != null && b.labor_cost !== '' ? r2(b.labor_cost) : est.labor_cost;
+  const other = b.other_cost != null && b.other_cost !== '' ? r2(b.other_cost) : est.other_cost;
+  const note = b.note !== undefined ? str(b.note) : existing?.note ?? null;
 
-    return await tx(async () => {
+  return await tx(async () => {
+    let id;
+    if (existing) {
+      id = existing.id;
+      await run(`DELETE FROM stock_movements WHERE ref_type IN ('assembly_in','assembly_out') AND ref_id = ?`, id);
+      await run('DELETE FROM assembly_items WHERE assembly_id = ?', id);
+      await run(
+        'UPDATE assemblies SET product_id=?, date=?, qty=?, labor_cost=?, other_cost=?, note=? WHERE id=?',
+        pid, date, qty, labor, other, note, id
+      );
+    } else {
       const info = await run(
         `INSERT INTO assemblies (product_id,date,qty,labor_cost,other_cost,note) VALUES (?,?,?,?,?,?)`,
-        pid,
-        date,
-        qty,
-        labor,
-        other,
-        str(b.note)
+        pid, date, qty, labor, other, note
       );
-      const id = Number(info.lastInsertRowid);
-      let material = 0;
-      for (const c of comps) {
-        const uc = await avgCostOf(c.component_id);
-        const line = r2(uc * c.required);
-        material += line;
-        await run(
-          'INSERT INTO assembly_items (assembly_id,component_id,qty,unit_cost,line_total) VALUES (?,?,?,?,?)',
-          id,
-          c.component_id,
-          c.required,
-          uc,
-          line
-        );
-        await run(
-          `INSERT INTO stock_movements (product_id,date,qty,unit_cost,ref_type,ref_id,note) VALUES (?,?,?,?, 'assembly_out', ?, ?)`,
-          c.component_id,
-          date,
-          -c.required,
-          uc,
-          id,
-          `Used in ${docNo.assembly(id)}`
-        );
-      }
-      material = r2(material);
-      const total = r2(material + labor + other);
-      const unit = r2(total / qty);
-      await run('UPDATE assemblies SET material_cost=?, total_cost=?, unit_cost=? WHERE id=?', material, total, unit, id);
+      id = Number(info.lastInsertRowid);
+    }
+    let material = 0;
+    for (const c of comps) {
+      const uc = await avgCostOf(c.component_id);
+      const line = r2(uc * c.required);
+      material += line;
       await run(
-        `INSERT INTO stock_movements (product_id,date,qty,unit_cost,ref_type,ref_id,note) VALUES (?,?,?,?, 'assembly_in', ?, ?)`,
-        pid,
-        date,
-        qty,
-        unit,
-        id,
-        `Assembled on ${docNo.assembly(id)}`
+        'INSERT INTO assembly_items (assembly_id,component_id,qty,unit_cost,line_total) VALUES (?,?,?,?,?)',
+        id, c.component_id, c.required, uc, line
       );
-      await recostInventory();
-      const done = await get('SELECT material_cost, total_cost, unit_cost FROM assemblies WHERE id = ?', id);
-      return { id, ref: docNo.assembly(id), ...done };
-    });
+      await run(
+        `INSERT INTO stock_movements (product_id,date,qty,unit_cost,ref_type,ref_id,note) VALUES (?,?,?,?, 'assembly_out', ?, ?)`,
+        c.component_id, date, -c.required, uc, id, `Used in ${docNo.assembly(id)}`
+      );
+    }
+    material = r2(material);
+    const total = r2(material + labor + other);
+    const unit = r2(total / qty);
+    await run('UPDATE assemblies SET material_cost=?, total_cost=?, unit_cost=? WHERE id=?', material, total, unit, id);
+    await run(
+      `INSERT INTO stock_movements (product_id,date,qty,unit_cost,ref_type,ref_id,note) VALUES (?,?,?,?, 'assembly_in', ?, ?)`,
+      pid, date, qty, unit, id, `Assembled on ${docNo.assembly(id)}`
+    );
+    await recostInventory();
+    const done = await get('SELECT material_cost, total_cost, unit_cost FROM assemblies WHERE id = ?', id);
+    return { id, ref: docNo.assembly(id), ...done };
+  });
+}
+
+r.post('/assemblies', h(async (req) => writeAssembly(req.body)));
+
+r.patch(
+  '/assemblies/:id',
+  h(async (req) => {
+    const a = await get('SELECT * FROM assemblies WHERE id = ?', req.params.id);
+    if (!a) throw notFound();
+    return writeAssembly(req.body, a);
   })
 );
 
